@@ -1,0 +1,21 @@
+[Unit]
+Description=Noha motion-activated Realtime voice host
+Wants=pipewire.service pipewire-pulse.service wireplumber.service
+After=pipewire.service pipewire-pulse.service wireplumber.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/opt/noha/current/venv/bin/noha run
+EnvironmentFile=-/etc/noha/secrets.env
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
+

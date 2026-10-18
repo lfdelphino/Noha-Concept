@@ -1,0 +1,14 @@
+[Unit]
+Description=Restore interrupted Noha update before startup
+After=local-fs.target
+Before=noha-network.service user@@NOHA_UID@.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/noha/updater.py --recover
+RemainAfterExit=true
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target
+

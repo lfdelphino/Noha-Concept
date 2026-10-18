@@ -1,0 +1,12 @@
+[Unit]
+Description=Check and apply published Noha releases
+Wants=network-online.target
+After=network-online.target noha-update-recover.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/noha/updater.py
+TimeoutStartSec=30min
+UMask=0077
+PrivateTmp=true
+

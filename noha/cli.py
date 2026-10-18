@@ -1,0 +1,108 @@
+import argparse
+import asyncio
+import json
+import logging
+import os
+from pathlib import Path
+import signal
+import subprocess
+
+from .config import Config
+
+
+async def with_signals(coroutine):
+    task = asyncio.create_task(coroutine)
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, task.cancel)
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+def doctor(config):
+    from .audio import devices
+    failures = 0
+    def report(ok, text):
+        nonlocal failures
+        print(("OK   " if ok else "ERRO ") + text)
+        failures += not ok
+    report(os.uname().machine == "aarch64", "Sistema ARM64")
+    report(Path(config.voice.instructions).is_file(), "Arquivo de personalidade")
+    has_key = bool(os.environ.get("OPENAI_API_KEY"))
+    try:
+        has_key = has_key or any(line.startswith("OPENAI_API_KEY=") and bool(line.partition("=")[2].strip())
+                                 for line in Path("/etc/noha/secrets.env").read_text().splitlines())
+    except OSError:
+        pass
+    report(has_key, "Chave OpenAI configurada (valor oculto)")
+    try:
+        names = {d["name"] for d in devices()}
+    except Exception:
+        names = set()
+    for label, name in (("Microfone", config.audio.microphone), ("Alto-falante", config.audio.speaker),
+                        ("Fonte AEC", config.audio.clean_source), ("Saída AEC", config.audio.reference_sink)):
+        report(bool(name and name in names), f"{label}: {name or 'não configurado'}")
+    try:
+        import gi
+        gi.require_version("Gst", "1.0")
+        from gi.repository import Gst
+        Gst.init(None)
+        report(all(Gst.ElementFactory.find(n) for n in ("pulsesrc", "pulsesink", "appsink", "appsrc", "audioresample")),
+               "Plugins GStreamer")
+    except Exception:
+        report(False, "GStreamer / PyGObject indisponível")
+    try:
+        result = subprocess.run(["pinctrl", "get", str(config.motion.gpio)], capture_output=True, text=True, timeout=5)
+        value = result.stdout.strip()
+        report(result.returncode == 0 and "SCL" not in value and "SDA" not in value,
+               f"GPIO BCM{config.motion.gpio}: {value}")
+    except Exception:
+        report(False, "Não foi possível consultar pinctrl")
+    print("Verifique também: systemctl status noha-network; systemctl --user status noha")
+    return 1 if failures else 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Noha — voz, movimento e configuração Wi-Fi")
+    parser.add_argument("--config", default="/etc/noha/noha.toml")
+    sub = parser.add_subparsers(dest="command", required=True)
+    run = sub.add_parser("run")
+    run.add_argument("--simulate-motion", action="store_true")
+    for name in ("doctor", "audio-list", "status", "trigger", "network", "portal"):
+        sub.add_parser(name)
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logging.getLogger("websockets").setLevel(logging.WARNING)
+    if args.command == "audio-list":
+        from .audio import devices
+        print(json.dumps(devices(), ensure_ascii=False, indent=2))
+        return
+    if args.command in {"trigger", "status"}:
+        from .app import runtime_dir
+        if args.command == "trigger":
+            (runtime_dir() / "trigger").touch(mode=0o600)
+            print("Movimento simulado enviado ao serviço do usuário.")
+        else:
+            path = runtime_dir() / "status.json"
+            print(path.read_text() if path.exists() else "Serviço ainda não publicou estado.")
+            print("Rede: systemctl status noha-network")
+        return
+    config = Config.load(args.config)
+    if args.command == "doctor":
+        raise SystemExit(doctor(config))
+    if args.command == "run":
+        from .app import run
+        coroutine = run(config, simulate=args.simulate_motion)
+    elif args.command == "network":
+        from .controller import serve
+        coroutine = serve(config.network)
+    else:
+        from .portal import serve
+        coroutine = serve(config.network)
+    asyncio.run(with_signals(coroutine))
+
+
+if __name__ == "__main__":
+    main()

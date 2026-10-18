@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Conectar Noha ao Wi-Fi</title>
+<style>
+:root{color-scheme:light;font:16px system-ui,sans-serif;color:#162533;background:#eff4f6}
+*{box-sizing:border-box}body{margin:0;padding:26px 16px}main{max-width:480px;margin:auto;background:white;border-radius:22px;padding:28px;box-shadow:0 8px 40px #15304012}
+.logo{font-size:13px;font-weight:800;letter-spacing:3px;color:#087b77}h1{font-size:28px;line-height:1.2;margin:14px 0}p{line-height:1.5;color:#52616a}
+label{display:block;font-weight:600;margin-top:20px}input,select,button{font:inherit;width:100%;padding:13px;border-radius:10px;border:1px solid #bdcbd2;margin-top:7px;background:white;color:inherit}input[type=checkbox]{width:auto}
+button{cursor:pointer;background:#087b77;color:white;border:0;font-weight:700;margin-top:22px}button.secondary{background:#edf5f4;color:#086762}button:disabled{opacity:.5;cursor:wait}
+#status{background:#eef6f5;border-radius:10px;padding:14px;white-space:pre-line}small{color:#607078;line-height:1.6}.error{color:#a12b35!important}a{color:#087b77}
+</style>
+<main><div class="logo">NOHA CONCEPT</div><h1>Vamos conectar o Noha?</h1>
+<p>Escolha o Wi-Fi do ambiente. Depois de conectar, o robô estará pronto para conversar.</p>
+<p id="status" role="status" aria-live="polite">Carregando redes…</p>
+<form id="form">
+<label for="networks">Redes encontradas</label><select id="networks"><option value="">Digitar outra rede ou rede oculta</option></select>
+<button type="button" class="secondary" id="scan">Buscar redes novamente</button>
+<small>A busca pode desconectar este aparelho por alguns segundos.</small>
+<label for="ssid">Nome da rede (SSID)</label><input id="ssid" required autocomplete="off" maxlength="32">
+<label><input id="hidden" type="checkbox"> Esta rede é oculta</label>
+<label for="security">Segurança</label><select id="security"><option value="wpa-psk">WPA / WPA2 / WPA2-WPA3</option><option value="sae">Somente WPA3</option><option value="open">Rede sem senha</option></select>
+<label for="password" id="password-label">Senha do Wi-Fi</label><input id="password" type="password" autocomplete="new-password" maxlength="64">
+<label><input id="show-password" type="checkbox"> Mostrar senha</label>
+<button id="connect" type="submit">Conectar Noha</button></form>
+<p><small>Durante a conexão, a rede de configuração desaparece. Se ela voltar, conecte-se novamente para conferir o resultado.<br>Endereço desta página: <a href="http://192.168.50.1">192.168.50.1</a></small></p>
+</main>
+<script>
+const $=id=>document.getElementById(id);let networks=[],busy=false;
+function message(text,error=false){$('status').textContent=text;$('status').classList.toggle('error',error)}
+function lock(value){busy=value;$('connect').disabled=value;$('scan').disabled=value}
+async function api(name,body){const response=await fetch('/api/'+name,{method:body?'POST':'GET',headers:{'Content-Type':'application/json','X-Noha-Token':'__TOKEN__'},body:body?JSON.stringify(body):undefined});const data=await response.json();if(!response.ok)throw new Error(data.error||'Tente novamente.');return data}
+async function load(){try{const data=await api('networks');networks=data.networks;$('networks').replaceChildren(new Option('Digitar outra rede ou rede oculta',''));networks.forEach((n,i)=>{const option=new Option(n.ssid+' ('+n.signal+'%)'+(n.security==='enterprise'?' — não suportada':''),String(i));option.disabled=n.security==='enterprise';$('networks').add(option)});await status()}catch(e){message('Não foi possível carregar. Reconecte à rede Noha-Setup e reabra esta página.',true)}}
+async function status(){if(busy)return;try{const s=await api('status');message(s.message);if(s.busy)lock(true)}catch(e){/* AP switches off intentionally during connection. */}}
+$('networks').onchange=()=>{if($('networks').value==='')return;const n=networks[Number($('networks').value)];$('ssid').value=n.ssid;$('security').value=n.security;$('hidden').checked=false;security()};
+function security(){$('password').disabled=$('security').value==='open';$('password').required=!$('password').disabled}
+$('security').onchange=security;$('show-password').onchange=()=>{$('password').type=$('show-password').checked?'text':'password'};
+$('form').onsubmit=async e=>{e.preventDefault();lock(true);try{await api('connect',{ssid:$('ssid').value,password:$('password').value,security:$('security').value,hidden:$('hidden').checked});$('password').value='';message('Conectando… Esta rede vai desaparecer.\nSe Noha-Setup voltar, conecte-se novamente e abra http://192.168.50.1 para conferir o resultado.')}catch(e){lock(false);message(e.message,true)}};
+$('scan').onclick=async()=>{lock(true);try{await api('scan',{});message('Buscando redes… Reconecte à rede Noha-Setup e reabra http://192.168.50.1.')}catch(e){lock(false);message(e.message,true)}};
+security();load();setInterval(status,5000);
+</script></html>
+

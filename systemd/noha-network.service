@@ -1,0 +1,25 @@
+[Unit]
+Description=Noha network recovery and local provisioning controller
+Wants=NetworkManager.service
+After=NetworkManager.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=root
+Group=noha-portal
+RuntimeDirectory=noha-network
+RuntimeDirectoryMode=0750
+ExecStart=/opt/noha/current/venv/bin/noha network
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=20
+UMask=0077
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+

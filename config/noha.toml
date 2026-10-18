@@ -1,0 +1,36 @@
+# Installed as /etc/noha/noha.toml. Secrets belong in /etc/noha/secrets.env.
+[voice]
+model = "gpt-realtime-1.5"
+voice = "marin"
+instructions = "/etc/noha/personality.txt"
+idle_seconds = 60
+eagerness = "medium"
+max_output_tokens = 512
+
+[motion]
+gpio = 3 # BCM numbering: physical pin 5
+warmup_seconds = 60
+rearm_seconds = 30
+greeting_cooldown_seconds = 120
+
+[audio]
+# Installer replaces these with stable PipeWire node.name values.
+microphone = ""
+speaker = ""
+clean_source = "noha_echo_source"
+reference_sink = "noha_echo_sink"
+playback_latency_ms = 80 # conservative estimate used for interrupted-history truncation
+
+[network]
+interface = "wlan0"
+hotspot_ssid = "" # empty => Noha-Setup-<machine-id suffix>
+gateway = "192.168.50.1"
+offline_seconds = 90
+check_seconds = 15
+connect_seconds = 45
+retry_seconds = 300
+portal_quiet_seconds = 120
+# Independent of OpenAI API authentication, quota and availability.
+connectivity_urls = ["https://www.gstatic.com/generate_204", "https://connectivitycheck.gstatic.com/generate_204"]
+socket = "/run/noha-network/control.sock"
+
