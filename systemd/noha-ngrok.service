@@ -1,0 +1,22 @@
+[Unit]
+Description=Noha persistent ngrok dashboard access
+Wants=network-online.target noha-portal.service
+After=network-online.target noha-portal.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=noha-ngrok
+Group=noha-ngrok
+ExecStart=/opt/noha/current/venv/bin/noha ngrok
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=15
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

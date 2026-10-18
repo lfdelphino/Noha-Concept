@@ -1,0 +1,10 @@
+[Unit]
+Description=Check Noha releases soon after boot, retrying while offline
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=2min
+Unit=noha-update-boot-check.service
+
+[Install]
+WantedBy=timers.target

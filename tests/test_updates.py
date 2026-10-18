@@ -71,7 +71,7 @@ class ActivationTests(unittest.TestCase):
             status = root / "runtime/update-pending"
             status.parent.mkdir()
             units = {}
-            for name in ("noha.service", "noha-network.service", "noha-portal.service"):
+            for name in ("noha.service", "noha-network.service", "noha-portal.service", "noha-admin.service", "noha-ngrok.service"):
                 old = root / "units" / name
                 old.parent.mkdir(exist_ok=True)
                 old.write_text("old " + name)

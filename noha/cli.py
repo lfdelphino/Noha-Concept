@@ -70,11 +70,33 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run")
     run.add_argument("--simulate-motion", action="store_true")
-    for name in ("doctor", "audio-list", "status", "trigger", "network", "portal"):
+    for name in ("doctor", "audio-list", "status", "trigger", "network", "portal", "web", "admin", "dashboard-password", "ngrok"):
         sub.add_parser(name)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     logging.getLogger("websockets").setLevel(logging.WARNING)
+    if args.command == "dashboard-password":
+        if os.geteuid() != 0:
+            raise SystemExit("Execute sudo noha dashboard-password")
+        import getpass
+        from .admin import atomic_write, ETC
+        from .passwords import password_record
+        password = getpass.getpass("Nova senha do painel (Enter para admin): ") or "admin"
+        if password != (getpass.getpass("Confirme a senha: ") or "admin"):
+            raise SystemExit("As senhas não coincidem")
+        atomic_write(ETC / "dashboard-password.json", password_record(password), backup=True)
+        print("Senha alterada. Todos os acessos anteriores foram encerrados.")
+        return
+    if args.command == "admin":
+        from .admin import serve
+        asyncio.run(with_signals(serve()))
+        return
+    if args.command == "ngrok":
+        # The service waits for dashboard setup without failing in a restart loop.
+        import time
+        while not Path("/etc/noha/ngrok.yml").is_file():
+            time.sleep(5)
+        os.execvp("ngrok", ["ngrok", "start", "noha", "--config", "/etc/noha/ngrok.yml"])
     if args.command == "audio-list":
         from .audio import devices
         print(json.dumps(devices(), ensure_ascii=False, indent=2))
@@ -97,6 +119,9 @@ def main():
         coroutine = run(config, simulate=args.simulate_motion)
     elif args.command == "network":
         from .controller import serve
+        coroutine = serve(config.network)
+    elif args.command == "web":
+        from .dashboard import serve
         coroutine = serve(config.network)
     else:
         from .portal import serve

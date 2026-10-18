@@ -1,0 +1,20 @@
+[Unit]
+Description=Noha restricted dashboard administration helper
+After=noha-update-recover.service
+
+[Service]
+Type=simple
+User=root
+Group=noha-portal
+RuntimeDirectory=noha-admin
+RuntimeDirectoryMode=0750
+ExecStart=/opt/noha/current/venv/bin/noha admin
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=5
+UMask=0077
+PrivateTmp=true
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

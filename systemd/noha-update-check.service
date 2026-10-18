@@ -1,0 +1,11 @@
+[Unit]
+Description=Check published Noha releases without installing
+Wants=network-online.target
+After=network-online.target noha-update-recover.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/noha/updater.py --check --force-check
+TimeoutStartSec=90
+UMask=0077
+PrivateTmp=true

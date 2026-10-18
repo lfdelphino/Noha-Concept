@@ -192,10 +192,9 @@ class NetworkManager:
             await asyncio.sleep(0.3)
             if self.dns.returncode is not None:
                 raise NetworkError("DNS/DHCP indisponível; verifique conflito na porta 53")
-        await command("systemctl", "start", "noha-portal.service", timeout=15)
+        # Shared web service is always running; destination address selects setup.
 
     async def hotspot_down(self):
-        await command("systemctl", "stop", "noha-portal.service", timeout=15, check=False)
         if self.dns and self.dns.returncode is None:
             self.dns.terminate()
             try:

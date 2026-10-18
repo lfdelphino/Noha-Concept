@@ -27,6 +27,10 @@ def main():
         run("runuser", "-u", data["user"], "--", *args, env=env)
     run("systemctl", "disable", "--now", "noha-update.timer")
     run("systemctl", "stop", "noha-update.service")
+    run("systemctl", "disable", "--now", "noha-update-check.timer")
+    run("systemctl", "stop", "noha-update-check.service", "noha-update-boot-check.service")
+    for name in ("noha-ngrok.service", "noha-portal.service", "noha-admin.service"):
+        run("systemctl", "disable", "--now", name)
     run("systemctl", "disable", "--now", "noha-update-recover.service")
     user_run("systemctl", "--user", "disable", "--now", "noha.service")
     run("systemctl", "disable", "--now", "noha-network.service")
@@ -40,16 +44,21 @@ def main():
              Path("/etc/systemd/system/noha-network.service"),
              Path("/etc/systemd/system/noha-portal.service"), Path("/usr/local/bin/noha"),
              Path("/usr/local/bin/noha-update"), Path("/etc/systemd/system/noha-update.service"),
-             Path("/etc/systemd/system/noha-update.timer"), Path("/etc/systemd/system/noha-update-recover.service")]
+             Path("/etc/systemd/system/noha-update.timer"), Path("/etc/systemd/system/noha-update-recover.service"),
+             Path("/etc/systemd/system/noha-update-check.timer"), Path("/etc/systemd/system/noha-update-check.service"),
+             Path("/etc/systemd/system/noha-update-boot-check.service"), Path("/etc/systemd/system/noha-admin.service"),
+             Path("/etc/systemd/system/noha-ngrok.service"), Path("/etc/avahi/services/noha.service")]
     for path in files:
         path.unlink(missing_ok=True)
     user_run("systemctl", "--user", "daemon-reload")
     user_run("systemctl", "--user", "restart", "pipewire.service", "pipewire-pulse.service", "wireplumber.service")
     run("systemctl", "daemon-reload")
+    run("systemctl", "try-restart", "avahi-daemon.service")
     if not data["linger_before"]:
         run("loginctl", "disable-linger", data["user"])
     print("Serviços removidos. Redes Wi-Fi salvas preservadas.")
     print("Código, chave e backups preservados em /opt/noha, /etc/noha e /var/lib/noha.")
+    print("Histórico preservado em /var/lib/noha-metrics. Hostname e pacotes ngrok/Avahi preservados.")
     print("Nenhum pacote compartilhado ou configuração I2C foi removido/alterado.")
 
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "noha-robot"
-version = "1.1.0"
+version = "1.2.0"
 description = "Noha: Raspberry Pi motion-activated Realtime voice host"
 requires-python = ">=3.11"
 dependencies = ["aiohttp>=3.10,<4", "websockets>=14,<16"]
@@ -16,5 +16,5 @@ noha = "noha.cli:main"
 packages = ["noha"]
 
 [tool.setuptools.package-data]
-noha = ["portal.html"]
+noha = ["portal.html", "dashboard.html", "dashboard.css", "dashboard.js", "logo.png"]
 

@@ -1,7 +1,7 @@
 [Unit]
 Description=Restore interrupted Noha update before startup
 After=local-fs.target
-Before=noha-network.service user@@NOHA_UID@.service
+Before=noha-network.service noha-admin.service noha-portal.service noha-ngrok.service user@@NOHA_UID@.service
 
 [Service]
 Type=oneshot

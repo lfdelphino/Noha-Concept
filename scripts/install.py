@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 import tomllib
+import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
 DEST = Path("/opt/noha")
@@ -53,6 +54,7 @@ def main():
     parser.add_argument("--speaker", help="PipeWire node.name estável do alto-falante")
     parser.add_argument("--country", help="País Wi-Fi de duas letras; solicitado se ainda não configurado")
     parser.add_argument("--disable-i2c", action="store_true", help="Desativa I2C após conflito no GPIO3; requer reiniciar")
+    parser.add_argument("--hostname", default=None, help="Nome mDNS do Pi (padrão na primeira instalação: noha)")
     args = parser.parse_args()
     if os.geteuid() != 0:
         sys.exit("Execute com sudo bash scripts/install.sh --user SEU_USUARIO")
@@ -84,19 +86,52 @@ def main():
         from updater import recover
         recover()
     os.umask(0o022)
-    pin = run("pinctrl", "get", "3", capture=True).stdout
+    config_path = ETC / "noha.toml"
+    existing = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
+    configured_gpio = existing.get("motion", {}).get("gpio", 3)
+    pin = run("pinctrl", "get", str(configured_gpio), capture=True).stdout
     if "SCL" in pin or "SDA" in pin:
         if args.disable_i2c:
             run("raspi-config", "nonint", "do_i2c", "1")
-            sys.exit("I2C desativado para liberar GPIO3. Reinicie o Pi e execute o instalador novamente.")
-        sys.exit("GPIO3 está ocupado por I2C. Se não usa dispositivos I2C, repita com --disable-i2c e reinicie.")
+            sys.exit(f"I2C desativado para liberar GPIO{configured_gpio}. Reinicie o Pi e execute o instalador novamente.")
+        sys.exit(f"GPIO{configured_gpio} está ocupado por I2C. Se não usa dispositivos I2C, repita com --disable-i2c e reinicie.")
 
     print("Instalando dependências de voz, GPIO e rede…")
     run("apt-get", "update")
     run("apt-get", "install", "-y", "python3-venv", "python3-gi", "python3-gst-1.0",
         "python3-gpiozero", "python3-lgpio", "gir1.2-gstreamer-1.0", "gstreamer1.0-tools",
         "gstreamer1.0-plugins-base", "gstreamer1.0-plugins-good", "pipewire", "pipewire-pulse",
-        "wireplumber", "libspa-0.2-modules", "dnsmasq-base", "network-manager", "nftables", "iw")
+        "wireplumber", "libspa-0.2-modules", "dnsmasq-base", "network-manager", "nftables", "iw",
+        "avahi-daemon", "avahi-utils", "libnss-mdns", "ca-certificates", "gnupg")
+    if not shutil.which("ngrok"):
+        # Install through ngrok's signed apt repository; never pipe a remote shell script.
+        key = urllib.request.urlopen("https://ngrok-agent.s3.amazonaws.com/ngrok.asc", timeout=30).read()
+        key_path = Path("/etc/apt/keyrings/noha-ngrok.asc")
+        write(key_path, key.decode("ascii"), 0o644)
+        write(Path("/etc/apt/sources.list.d/noha-ngrok.list"),
+              "deb [signed-by=/etc/apt/keyrings/noha-ngrok.asc] https://ngrok-agent.s3.amazonaws.com bookworm main\n")
+        run("apt-get", "update")
+        run("apt-get", "install", "-y", "ngrok")
+    hostname = args.hostname or old_manifest.get("hostname", "noha")
+    if not re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", hostname):
+        sys.exit("Hostname inválido; use letras, números e hífen, até 63 caracteres")
+    if platform.node() != hostname:
+        backup(Path("/etc/hostname"))
+        run("hostnamectl", "set-hostname", hostname)
+        hosts = Path("/etc/hosts")
+        hosts_text = hosts.read_text()
+        if re.search(r"(?m)^127\.0\.1\.1\s+", hosts_text):
+            hosts_text = re.sub(r"(?m)^127\.0\.1\.1\s+.*$", "127.0.1.1\t" + hostname, hosts_text)
+        else:
+            hosts_text += "\n127.0.1.1\t" + hostname + "\n"
+        write(hosts, hosts_text)
+    # Advertise an HTTP service as well as the hostname for local discovery.
+    write(Path("/etc/avahi/services/noha.service"),
+          '<?xml version="1.0" standalone="no"?><!DOCTYPE service-group SYSTEM "avahi-service.dtd">\n'
+          '<service-group><name replace-wildcards="yes">Noha — %h</name><service><type>_http._tcp</type>'
+          '<port>80</port><txt-record>path=/</txt-record></service></service-group>\n')
+    run("systemctl", "enable", "--now", "avahi-daemon.service")
+    run("systemctl", "restart", "avahi-daemon.service")
     reg = run("iw", "reg", "get", capture=True).stdout
     if args.country or not re.search(r"country (?!00)[A-Z]{2}:", reg):
         country = args.country or input("País de uso do Wi-Fi (BR, US, etc.): ").strip().upper()
@@ -109,6 +144,8 @@ def main():
         run("useradd", "--system", "--user-group", "--no-create-home", "--shell", "/usr/sbin/nologin", "noha-portal")
     if subprocess.run(["getent", "group", "noha"], stdout=subprocess.DEVNULL).returncode:
         run("groupadd", "--system", "noha")
+    if subprocess.run(["getent", "passwd", "noha-ngrok"], stdout=subprocess.DEVNULL).returncode:
+        run("useradd", "--system", "--user-group", "--no-create-home", "--shell", "/usr/sbin/nologin", "noha-ngrok")
     run("usermod", "-a", "-G", "audio,gpio,noha", args.user)
     manifest_path = STATE / "install.json"
     linger_before = old_manifest.get("linger_before", Path(f"/var/lib/systemd/linger/{args.user}").exists())
@@ -180,6 +217,16 @@ def main():
     import grp
     os.chown(secret_path, 0, grp.getgrnam("noha").gr_gid)
     os.chmod(secret_path, 0o640)
+    # Import directly from this checkout, before switching the service to its venv.
+    sys.path.insert(0, str(ROOT))
+    from noha.passwords import password_record
+    password_path = ETC / "dashboard-password.json"
+    if not password_path.exists():
+        write(password_path, json.dumps(password_record("admin")), 0o600)
+    metrics_dir = Path("/var/lib/noha-metrics")
+    metrics_dir.mkdir(mode=0o700, exist_ok=True)
+    os.chown(metrics_dir, account.pw_uid, account.pw_gid)
+    os.chmod(metrics_dir, 0o700)
 
     user_config = Path(account.pw_dir) / ".config"
     echo_path = user_config / "pipewire/pipewire.conf.d/80-noha-echo.conf"
@@ -204,16 +251,17 @@ def main():
     for path in (echo_path, echo_path.parent, echo_path.parent.parent,
                  user_unit, user_unit.parent, user_unit.parent.parent, user_config):
         os.chown(path, account.pw_uid, account.pw_gid)
-    for name in ("noha-network.service", "noha-portal.service"):
+    for name in ("noha-network.service", "noha-portal.service", "noha-admin.service", "noha-ngrok.service"):
         write(Path("/etc/systemd/system") / name, (ROOT / "systemd" / name).read_text())
-    for name in ("noha-update.service", "noha-update.timer", "noha-update-recover.service"):
+    for name in ("noha-update.service", "noha-update.timer", "noha-update-recover.service", "noha-update-check.service",
+                 "noha-update-boot-check.service", "noha-update-check.timer"):
         content = (ROOT / "systemd" / name).read_text().replace("@NOHA_UID@", str(account.pw_uid))
         write(Path("/etc/systemd/system") / name, content)
     write(DEST / "updater.py", (ROOT / "scripts/updater.py").read_text(), 0o644)
     write(Path("/usr/local/bin/noha-update"), '#!/bin/sh\nexec /usr/bin/python3 /opt/noha/updater.py "$@"\n', 0o755)
     launcher = '#!/bin/sh\nexec /opt/noha/current/venv/bin/noha "$@"\n'
     write(Path("/usr/local/bin/noha"), launcher, 0o755)
-    write(manifest_path, json.dumps({"user": args.user, "linger_before": linger_before,
+    write(manifest_path, json.dumps({"user": args.user, "hostname": hostname, "linger_before": linger_before,
                                    "echo_path": str(echo_path), "user_unit": str(user_unit)}, indent=2), 0o600)
     run("systemctl", "daemon-reload")
     user_run("systemctl", "--user", "daemon-reload")
@@ -229,8 +277,13 @@ def main():
         sys.exit("AEC não iniciou. Consulte journalctl --user -u pipewire; corrija antes de habilitar Noha.")
     user_run("systemctl", "--user", "enable", "noha.service")
     run("systemctl", "enable", "--now", "noha-network.service")
+    run("systemctl", "restart", "noha-network.service")
+    for name in ("noha-admin.service", "noha-portal.service", "noha-ngrok.service"):
+        run("systemctl", "enable", "--now", name)
+        run("systemctl", "restart", name)
     run("systemctl", "enable", "noha-update-recover.service")
     run("systemctl", "enable", "--now", "noha-update.timer")
+    run("systemctl", "enable", "--now", "noha-update-check.timer")
     # New audio/gpio/noha group membership takes effect reliably after reboot.
     print("\nInstalado. Reinicie o Pi para aplicar grupos e iniciar Noha sem login.")
     print("API key: /etc/noha/secrets.env (não publique esse arquivo)")
@@ -238,6 +291,8 @@ def main():
     print("Sem internet por 90s: conecte a Noha-Setup-XXXX e abra http://192.168.50.1")
     print("Backups de configuração: /var/lib/noha/backups")
     print("Atualizações automáticas: releases estáveis de github.com/lfdelphino/Noha-Concept")
+    print(f"Painel: http://{hostname}.local — senha inicial admin (preservada se já alterada)")
+    print("Configure o authtoken e hostname ngrok em Ajustes → Acesso ngrok para acesso pela internet.")
 
 
 if __name__ == "__main__":

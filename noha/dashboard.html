@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#132a28"><title>Noha · Painel</title>
+  <link rel="stylesheet" href="/dashboard.css"><script defer src="/dashboard.js"></script>
+</head>
+<body>
+<div id="login" class="login-wrap">
+  <form id="login-form" class="login-card">
+    <div class="brand-mark"><img src="/logo.png" alt="Noha" class="brand-logo"></div><p class="eyebrow">NOHA CONCEPT</p>
+    <h1>Seu anfitrião,<br>por dentro.</h1><p class="muted">Entre para acompanhar e configurar a Noha.</p>
+    <label for="login-password">Senha do painel</label><input id="login-password" type="password" autocomplete="current-password" required maxlength="256">
+    <button type="submit" class="primary">Entrar <span aria-hidden="true">→</span></button>
+    <p id="login-error" class="error" role="alert"></p><p class="muted small">Primeiro acesso: admin</p>
+  </form>
+</div>
+<div id="shell" hidden>
+  <header class="topbar"><a class="wordmark" href="#overview" aria-label="Noha · Visão geral"><img src="/logo.png" alt="Noha"></a><div class="top-actions"><span id="connection" class="badge">Conectando</span><button id="logout" class="quiet" aria-label="Sair do painel">Sair ↗</button></div></header>
+  <main>
+    <div id="notice" class="notice" role="status" hidden></div>
+    <section id="overview" class="view">
+      <div class="page-heading"><p class="eyebrow">VISÃO GERAL</p><h1>Olá, Noha.</h1><p class="muted">Um olhar sobre o que está acontecendo agora.</p></div>
+      <article class="hero-card"><div class="hero-top"><span class="eyebrow">ANFITRIÃO DE VOZ</span><span id="voice-badge" class="badge">Aguardando</span></div><div class="voice-orb" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div><h2 id="voice-state">Aguardando o robô</h2><p id="active-model">—</p><div class="hero-footer"><span id="voice-ready">Estado indisponível</span><span id="uptime">—</span></div></article>
+      <div class="section-title"><h2>Conexões</h2><span class="muted small">Ao vivo</span></div>
+      <div class="cards two"><article class="card"><span class="card-icon">⌁</span><h3>Rede</h3><p id="network-state" class="value">—</p><p id="network-detail" class="muted small">—</p></article><article class="card"><span class="card-icon">↗</span><h3>ngrok</h3><p id="ngrok-state" class="value">—</p><p class="muted small">Acesso pela internet</p></article></div>
+      <article class="card addresses"><h3>Seu painel, em dois endereços</h3><label>Na rede local</label><div class="address"><a id="local-url" href="http://noha.local">http://noha.local</a><button class="quiet copy" data-copy="local-url" aria-label="Copiar endereço local">Copiar</button></div><label>Pela internet</label><div class="address"><a id="public-url">Configure o ngrok</a><button class="quiet copy" data-copy="public-url" aria-label="Copiar endereço ngrok">Copiar</button></div></article>
+      <div class="section-title"><h2>Raspberry Pi</h2><span id="hardware" class="muted small">—</span></div>
+      <div class="cards two"><article class="card metric"><h3>Processador</h3><p id="cpu" class="metric-value">—</p><progress id="cpu-bar" max="100" value="0" aria-label="Uso de CPU"></progress></article><article class="card metric"><h3>Temperatura</h3><p id="temperature" class="metric-value">—</p><p class="muted small">Temperatura do sistema</p></article><article class="card metric"><h3>Memória</h3><p id="memory" class="metric-value">—</p><p id="memory-detail" class="muted small">—</p><progress id="memory-bar" max="100" value="0" aria-label="Uso de memória"></progress></article><article class="card metric"><h3>Armazenamento</h3><p id="disk" class="metric-value">—</p><p id="disk-detail" class="muted small">—</p><progress id="disk-bar" max="100" value="0" aria-label="Uso de disco"></progress></article></div>
+    </section>
+    <section id="usage" class="view" hidden>
+      <div class="page-heading"><p class="eyebrow">ATIVIDADE</p><h1>Cada conversa conta.</h1><p class="muted">Uso deste robô, sem guardar áudio ou transcrições.</p></div>
+      <div class="segmented" role="group" aria-label="Período"><button data-days="1" aria-pressed="true">Hoje</button><button data-days="7" aria-pressed="false">7 dias</button><button data-days="30" aria-pressed="false">30 dias</button></div>
+      <div id="usage-totals" class="cards two"></div><div class="section-title"><h2>Por modelo</h2><button id="refresh-usage" class="quiet">Atualizar ↻</button></div><div id="usage-models"></div><p class="muted small">Histórico de 90 dias. Contadores não informados pelo modelo aparecem como indisponíveis. Hoje segue o fuso horário do Pi.</p>
+    </section>
+    <section id="settings" class="view" hidden>
+      <div class="page-heading"><p class="eyebrow">CONFIGURAÇÕES</p><h1>Do seu jeito.</h1><p class="muted">Personalidade, hardware e acesso em um só lugar.</p></div>
+      <div id="pending-settings" class="notice" hidden></div>
+      <form id="voice-form" class="card form-card"><div class="card-heading"><span class="card-icon">✦</span><div><h2>Voz e personalidade</h2><p class="muted small">Aplicadas quando a conversa atual terminar.</p></div></div>
+        <label for="model">Modelo</label><select id="model" required></select><p id="model-note" class="muted small"></p>
+        <label for="voice">Voz</label><select id="voice" required></select>
+        <label for="instructions">Instruções do agente</label><textarea id="instructions" rows="9" maxlength="60000" required spellcheck="false"></textarea>
+        <label for="gpio">Sensor de movimento · GPIO BCM</label><select id="gpio" required></select><p class="muted small">Confira a ligação física antes de trocar. Funções ocupadas são rejeitadas.</p>
+        <label for="openai-key">Chave OpenAI</label><input id="openai-key" type="password" autocomplete="new-password" maxlength="512" spellcheck="false"><p id="openai-configured" class="muted small">Deixe vazio para manter a chave salva.</p>
+        <button type="submit" class="primary">Salvar configurações</button><p class="form-result" role="status"></p>
+      </form>
+      <form id="ngrok-form" class="card form-card"><div class="card-heading"><span class="card-icon">↗</span><div><h2>Acesso ngrok</h2><p class="muted small">Sempre ativo junto com o endereço local.</p></div></div>
+        <label for="ngrok-url">Endereço HTTPS da sua conta</label><input id="ngrok-url" type="url" inputmode="url" placeholder="https://seu-endereco.ngrok-free.app" autocomplete="off" required>
+        <label for="ngrok-token">Authtoken do agente</label><input id="ngrok-token" type="password" autocomplete="new-password" maxlength="512" spellcheck="false"><p id="ngrok-configured" class="muted small">Use o authtoken do agente, disponível na sua conta ngrok.</p>
+        <p class="muted small">Salvar reconecta o ngrok e pode interromper este acesso por alguns segundos. Se trocar o hostname, abra o novo endereço.</p><button type="submit" class="primary">Salvar e reconectar</button><p class="form-result" role="status"></p>
+      </form>
+      <form id="password-form" class="card form-card"><div class="card-heading"><span class="card-icon">⌘</span><div><h2>Senha do painel</h2><p class="muted small">Vale para o acesso local e ngrok.</p></div></div>
+        <label for="current-password">Senha atual</label><input id="current-password" type="password" autocomplete="current-password" required maxlength="256">
+        <label for="new-password">Nova senha</label><input id="new-password" type="password" autocomplete="new-password" required maxlength="256">
+        <label for="confirm-password">Confirme a nova senha</label><input id="confirm-password" type="password" autocomplete="new-password" required maxlength="256">
+        <button type="submit" class="primary">Alterar senha</button><p class="form-result" role="status"></p><p class="muted small">Todos os acessos serão encerrados. Recuperação no Pi: <code>sudo noha dashboard-password</code>.</p>
+      </form>
+    </section>
+    <section id="system" class="view" hidden>
+      <div class="page-heading"><p class="eyebrow">SISTEMA</p><h1>Tudo em movimento.</h1><p class="muted">Atualizações e os últimos eventos da Noha.</p></div>
+      <article class="card"><div class="card-heading"><span class="card-icon">↓</span><div><h2>Atualizações</h2><p class="muted small">Verificação no boot e instalação automática por hora.</p></div></div><dl class="details"><div><dt>Instalada</dt><dd id="installed-version">—</dd></div><div><dt>Disponível</dt><dd id="latest-version">—</dd></div><div><dt>Última verificação</dt><dd id="last-check">—</dd></div><div><dt>Estado</dt><dd id="update-state">—</dd></div></dl><p id="update-detail" class="muted small">—</p><div class="button-row"><button id="check-update" class="secondary">Verificar agora</button><button id="install-update" class="primary">Instalar atualização</button></div><p id="update-result" role="status" class="form-result"></p></article>
+      <article class="card"><div class="section-title"><h2>Eventos recentes</h2><span class="badge">Ao vivo</span></div><div class="filters"><div><label for="log-service">Serviço</label><select id="log-service"><option value="voice">Voz</option><option value="network">Rede</option><option value="web">Painel web</option><option value="admin">Configurações</option><option value="ngrok">ngrok</option><option value="updates">Atualizador</option></select></div><div><label for="log-level">Nível mínimo</label><select id="log-level"><option value="info">Informação</option><option value="warning">Aviso</option><option value="err">Erro</option><option value="debug">Depuração</option></select></div></div><div id="log-entries" class="logs" tabindex="0" aria-label="Logs recentes">Carregando eventos…</div><p class="muted small">Até 100 eventos das últimas 24 horas. Chaves são ocultadas.</p></article>
+    </section>
+    <footer class="footer">NOHA CONCEPT <span>Um espaço para boas conversas.</span></footer>
+  </main>
+  <nav class="bottom-nav" aria-label="Navegação principal"><a href="#overview" aria-current="page"><span aria-hidden="true">◉</span>Visão geral</a><a href="#usage"><span aria-hidden="true">▥</span>Atividade</a><a href="#settings"><span aria-hidden="true">⚙</span>Ajustes</a><a href="#system"><span aria-hidden="true">▤</span>Sistema</a></nav>
+</div>
+</body></html>

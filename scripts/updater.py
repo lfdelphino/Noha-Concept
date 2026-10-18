@@ -27,6 +27,12 @@ REPO = "lfdelphino/Noha-Concept"
 log = logging.getLogger("noha.update")
 
 
+def progress(state, **fields):
+    status = read_json(STATE / "update-status.json", {})
+    status.update(state=state, updated_at=time.time(), **fields)
+    atomic_json(STATE / "update-status.json", status)
+
+
 def version(tag):
     match = re.fullmatch(r"v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", tag)
     if not match:
@@ -156,7 +162,13 @@ def user_command(user, *args, check=True):
 def paths(user):
     return {"noha.service": Path(user.pw_dir) / ".config/systemd/user/noha.service",
             "noha-network.service": Path("/etc/systemd/system/noha-network.service"),
-            "noha-portal.service": Path("/etc/systemd/system/noha-portal.service")}
+            "noha-portal.service": Path("/etc/systemd/system/noha-portal.service"),
+            "noha-admin.service": Path("/etc/systemd/system/noha-admin.service"),
+            "noha-ngrok.service": Path("/etc/systemd/system/noha-ngrok.service")}
+
+
+def extra_services(user):
+    return [name for name in paths(user) if name in {"noha-admin.service", "noha-portal.service", "noha-ngrok.service"}]
 
 
 def maintenance(user):
@@ -212,6 +224,8 @@ def health(user, tag, seconds):
                     and bool(network.get("mode"))
                     and user_command(user, "is-active", "--quiet", "noha.service", check=False)
                     and command("systemctl", "is-active", "--quiet", "noha-network.service", check=False))
+            for name in extra_services(user):
+                okay = okay and command("systemctl", "is-active", "--quiet", name, check=False)
             stable_since = (stable_since or time.monotonic()) if okay else None
             if stable_since and time.monotonic() - stable_since >= 15:
                 return True
@@ -261,6 +275,8 @@ def _stage(release):
     if (manifest.get("format") != 1 or manifest.get("requires_installer", False)
             or version(manifest.get("version", "")) != version(release["tag"])
             or version(package["project"]["version"]) != version(release["tag"])):
+        if manifest.get("requires_installer", False):
+            progress("installer_required", message="Esta versão exige reexecutar o instalador no Pi.")
         raise ValueError("Pacote incompatível: confira a versão ou reexecute o instalador")
     for name in paths_for_bundle():
         if not (source / name).is_file():
@@ -278,7 +294,8 @@ def _stage(release):
 
 
 def paths_for_bundle():
-    return ("systemd/noha.service", "systemd/noha-network.service", "systemd/noha-portal.service")
+    return tuple("systemd/" + name for name in ("noha.service", "noha-network.service", "noha-portal.service",
+                                               "noha-admin.service", "noha-ngrok.service"))
 
 
 def restore_units(user, saved):
@@ -298,6 +315,8 @@ def recover(start_services=True):
         return False
     user = account()
     if start_services:
+        for name in reversed(extra_services(user)):
+            command("systemctl", "stop", name, check=False)
         user_command(user, "stop", "noha.service", check=False)
         command("systemctl", "stop", "noha-network.service", check=False)
     switch(Path(transaction["previous"]))
@@ -311,9 +330,12 @@ def recover(start_services=True):
         user_command(user, "reset-failed", "noha.service", check=False)
         command("systemctl", "restart", "noha-network.service")
         user_command(user, "restart", "noha.service")
+        for name in extra_services(user):
+            command("systemctl", "restart", name)
     path.unlink()
     maintenance(user).unlink(missing_ok=True)
     log.warning("Versão anterior restaurada")
+    progress("rollback", message="Versão anterior restaurada após falha de inicialização.")
     return True
 
 
@@ -324,8 +346,10 @@ def apply(target, release, settings):
         raise RuntimeError("Serviço de voz ainda não iniciou")
     pending.touch(mode=0o644)
     try:
+        progress("waiting", message="Aguardando conversa e operações de rede terminarem.")
         if not wait_idle(user, settings.get("idle_wait_seconds", 300)):
             log.info("Atualização adiada: conversa, configuração ou hardware indisponível")
+            progress("deferred", message="Robô ocupado ou hardware indisponível; nova tentativa na próxima verificação.")
             return False
         previous = (ROOT / "current").resolve(strict=True)
         old_units = {name: path.read_text(encoding="utf-8") for name, path in paths(user).items()}
@@ -333,6 +357,9 @@ def apply(target, release, settings):
             "previous": str(previous), "candidate": str(target), "units": old_units, "release": release,
             "state": read_json(STATE / "updates.json", {})})
         try:
+            progress("installing", message="Ativando a nova versão.")
+            for name in reversed(extra_services(user)):
+                command("systemctl", "stop", name)
             user_command(user, "stop", "noha.service")
             command("systemctl", "stop", "noha-network.service")
             switch(target)
@@ -343,12 +370,15 @@ def apply(target, release, settings):
             user_command(user, "reset-failed", "noha.service", check=False)
             command("systemctl", "start", "noha-network.service")
             user_command(user, "start", "noha.service")
+            for name in extra_services(user):
+                command("systemctl", "start", name)
             if not health(user, release["tag"], settings.get("health_seconds", 90)):
                 raise RuntimeError("A nova versão não passou na verificação de inicialização")
             state = {"current": release, "previous": str(previous), "result": "updated"}
             atomic_json(STATE / "updates.json", state)
             (STATE / "update-transaction.json").unlink()
             log.info("Atualização aplicada: %s", release["tag"])
+            progress("updated", installed=release["tag"].lstrip("v"), message="Atualização aplicada com sucesso.")
             return True
         except Exception:
             recover()
@@ -364,24 +394,42 @@ def run(check_only=False, retry=False):
     if not settings.get("enabled", True) and not check_only:
         log.info("Atualizações desativadas")
         return
+    previous_status = read_json(STATE / "update-status.json", {})
+    boot_path = Path("/proc/sys/kernel/random/boot_id")
+    boot_id = boot_path.read_text().strip() if boot_path.exists() else "unknown"
+    # The boot-check timer retries every two minutes only until the first success.
+    # Explicit dashboard checks bypass this cache through --force-check.
+    if (check_only and not retry and previous_status.get("checked_boot") == boot_id
+            and time.time() - previous_status.get("checked_at", 0) < 3600):
+        return
+    if (STATE / "config-pending.json").exists() and not check_only:
+        progress("deferred", message="Aguardando aplicação das configurações do painel.")
+        return
+    progress("checking", message="Consultando releases estáveis no GitHub.")
     release = latest()
+    installed = read_json(ROOT / "current/release.json", {})
+    progress("current", installed=installed.get("version"), latest=release["tag"] if release else None,
+             checked_at=time.time(), checked_boot=boot_id, message="Verificação concluída.")
     if not release:
         log.info("Nenhuma release publicada; mantendo versão atual")
         return
-    installed = read_json(ROOT / "current/release.json", {})
     state = read_json(STATE / "updates.json", {})
     log.info("Instalada=%s disponível=%s", installed.get("version", "?"), release["tag"])
+    if version(release["tag"]) > version(installed.get("version", "0.0.0")):
+        progress("available", message="Nova versão disponível.")
     if check_only or version(release["tag"]) <= version(installed.get("version", "0.0.0")):
         return
     if state.get("rejected") == release and not retry:
         log.warning("Release anteriormente rejeitada; publique uma nova versão ou use --retry")
         return
+    progress("staging", message="Baixando e preparando a nova versão.")
     apply(stage(release), release, settings)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Atualizações Noha por releases públicas do GitHub")
     parser.add_argument("--check", action="store_true", help="Consulta a versão sem instalar")
+    parser.add_argument("--force-check", action="store_true", help="Ignora cache de verificação")
     parser.add_argument("--retry", action="store_true", help="Tenta novamente uma release que falhou")
     parser.add_argument("--recover", action="store_true", help="Restaura transação interrompida no boot")
     parser.add_argument("--rollback", action="store_true", help="Restaura a versão anterior manualmente")
@@ -417,8 +465,11 @@ def main():
                     state["result"] = "manual_rollback"
                     atomic_json(STATE / "updates.json", state)
             else:
-                run(args.check, args.retry)
+                run(args.check, args.retry or args.force_check)
         except Exception as exc:
+            if read_json(STATE / "update-status.json", {}).get("state") not in {"rollback", "installer_required"}:
+                progress("offline" if isinstance(exc, (OSError, urllib.error.URLError)) else "error",
+                         message="Operação não concluída. Confira conectividade e logs do atualizador.")
             log.error("Atualização não aplicada (%s). Consulte a configuração e a conectividade.", type(exc).__name__)
             raise SystemExit(1)
 

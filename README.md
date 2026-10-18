@@ -1,8 +1,8 @@
 # Noha — anfitrião de voz para Raspberry Pi 5
 
-Aplicação nova, sem câmera, com `gpt-realtime-1.5`, microfone e alto-falante USB, sensor HC-SR501 e configuração de Wi-Fi pelo celular. A personalidade e os fatos da Noha Concept foram extraídos de `robo.py`; o rascunho original permanece como referência.
+Aplicação sem câmera, com `gpt-realtime-1.5` por padrão, modelos de voz selecionáveis, microfone e alto-falante USB, sensor HC-SR501, painel de administração e configuração de Wi-Fi pelo celular. A personalidade e os fatos da Noha Concept foram extraídos de `robo.py`; o rascunho original permanece como referência.
 
-O Pi captura/reproduz áudio e detecta movimento; a conversa depende da internet e da API OpenAI. Não há modelo local, ferramentas externas ou etapa separada de transcrição.
+O Pi captura/reproduz áudio e detecta movimento; a conversa depende da internet e da API OpenAI. Não há modelo local, ferramentas externas ou etapa separada de transcrição. GPT-Live utiliza sua própria conexão de áudio, sem um modelo de backend adicional.
 
 ## Instalação
 
@@ -47,6 +47,41 @@ noha run --simulate-motion
 # Ao terminar com Ctrl+C:
 systemctl --user start noha
 ```
+
+## Painel de administração
+
+A versão **1.2.0 exige reexecutar o instalador uma vez**, inclusive em Pis que já recebem atualizações automáticas. Copie o projeto ao Pi, execute `sudo bash scripts/install.sh --user "$USER"` e reinicie. O instalador adiciona Avahi/mDNS, ngrok e os serviços do painel. Não publica nem configura uma conta ngrok automaticamente.
+
+Na mesma rede do Pi, abra **http://noha.local** no celular ou computador. Não precisa descobrir o IP atribuído pelo roteador nem conectar uma tela ao Pi. O nome funciona quando o Raspberry está conectado ao roteador como cliente Wi-Fi ou por Ethernet. Redes de convidados, isolamento de dispositivos ou bloqueio de multicast podem impedir a descoberta local. Para outro nome, use `--hostname outro-nome` no instalador; reinstalações preservam o nome registrado.
+
+A senha inicial é **admin**. Altere em **Ajustes → Senha do painel**; a troca encerra as sessões existentes. Para recuperar pelo terminal, sem colocar a senha no histórico:
+
+```bash
+sudo noha dashboard-password
+```
+
+Digite a nova senha e confirme; Enter nas duas perguntas restaura `admin`. A senha fica armazenada como hash com salt, e reinstalações preservam a senha alterada. O acesso local usa HTTP, portanto senha e alterações trafegam sem criptografia na LAN. O endereço ngrok usa HTTPS.
+
+O painel foi desenhado primeiro para celular, com quatro áreas:
+
+- **Visão geral:** estado da voz, modelo ativo, conexão, prontidão de áudio/sensor, CPU, temperatura, memória, disco e os dois endereços do painel.
+- **Atividade:** conversas, duração, tokens informados pelo modelo, erros e reconexões, hoje/7/30 dias e por modelo. O histórico numérico persiste por 90 dias em `/var/lib/noha-metrics`, sem áudio, transcrições ou estimativas de custo. Hoje segue o fuso do Pi. Contadores não fornecidos, como tokens de voz do GPT-Live, aparecem como indisponíveis.
+- **Ajustes:** instruções do agente, modelo, voz compatível, GPIO BCM com pino físico, substituição da chave OpenAI, senha e configurações ngrok. Campos de chave vazios mantêm a credencial existente; valores salvos não são devolvidos ao navegador.
+- **Sistema:** até 100 eventos recentes com filtros e acompanhamento ao vivo; versões instalada/disponível, última verificação, estado e botões para verificar/instalar atualizações.
+
+Mudanças de voz, instruções, GPIO e chave aguardam a conversa atual terminar. O painel distingue configurações pendentes da configuração ativa. A gravação é atômica, com cópias em `/var/lib/noha/backups`; falha de inicialização restaura os arquivos anteriores. A mudança de GPIO verifica se a linha pode ser usada e não altera funções de hardware do sistema automaticamente. Desligue o Pi antes de mudar a fiação física.
+
+O seletor inclui GPT Realtime 1.5, GPT Live 1, Realtime 2.1 Mini, 2.1, 2 e as famílias GPT-4o Realtime. Modelos legados recebem indicação; IDs retirados ficam desabilitados. O acesso depende da sua conta OpenAI e um erro não causa troca silenciosa de modelo. GPT-Live tem um adaptador separado; respostas faladas, interrupções e saudações precisam de validação com o hardware definitivo.
+
+### Acesso ngrok sempre ativo
+
+Crie sua conta ngrok e copie o **authtoken do agente** e o **hostname HTTPS atribuído à conta**. No painel local, abra **Ajustes → Acesso ngrok**, preencha os campos e salve. A integração usa authtoken, não a chave da API de gerenciamento ngrok. O plano gratuito atribui um hostname fixo; escolher um hostname próprio depende do plano da conta.
+
+Depois de configurado, o serviço ngrok inicia em cada boot, mantém o endereço público em paralelo com `noha.local` e tenta reconectar após quedas. Se ainda não houver credenciais, fica aguardando configuração e o painel mostra esse estado. Não há encaminhamento de portas no roteador. Se trocar o hostname, abra o endereço novo: a resposta de gravação chega antes do reinício do túnel. Falhas do túnel não impedem o acesso local.
+
+O ngrok recebe tráfego apenas para `http://127.0.0.1:80`. A configuração é gerada pelo sistema e validada antes de salvar; não aceita upstream arbitrário. Credenciais ficam fora dos releases, e a inspeção local de corpos de requisição está desativada. O plano gratuito tem limites de requisições/tráfego e pode apresentar um aviso inicial no navegador. O painel utiliza um fluxo de eventos e o suspende quando a página fica oculta, reduzindo requisições.
+
+O mesmo processo web atende a porta 80 continuamente. Conexões destinadas ao endereço do hotspot recebem exclusivamente o portal de Wi-Fi. A escolha usa o endereço local da conexão, sem confiar no hostname enviado pelo navegador; o firewall do hotspot mantém a restrição. O processo web não é root. Um serviço separado, com socket Unix restrito, aplica apenas as operações administrativas permitidas.
 
 ## Ligações do HC-SR501
 
@@ -110,13 +145,19 @@ As verificações de internet exigem HTTP 204 via HTTPS nos endereços em `netwo
 | `/etc/noha/noha.toml` | Modelo, voz, dispositivos, GPIO, temporizadores e rede |
 | `/etc/noha/personality.txt` | Personalidade e informações da Noha Concept |
 | `/etc/noha/secrets.env` | `OPENAI_API_KEY=...`, somente root e grupo `noha` |
+| `/etc/noha/dashboard-password.json` | Hash da senha e revisão para invalidar sessões |
+| `/etc/noha/ngrok.json`, `/etc/noha/ngrok.yml` | Authtoken e configuração gerada ngrok; acesso restrito |
+| `/var/lib/noha-metrics/usage.sqlite3` | Métricas numéricas persistentes |
 | `/opt/noha/current` | Link atômico para a versão ativa e seu ambiente Python |
 | `/opt/noha/releases/` | Versões preparadas e anteriores, preservadas para rollback |
 | `~/.config/pipewire/pipewire.conf.d/80-noha-echo.conf` | Rotas físicas do cancelamento de eco |
 | `noha.service` (usuário) | Sensor, sessão de voz e áudio; inicia com lingering |
 | `noha-network.service` (sistema) | NetworkManager, recuperação, DHCP/DNS e socket local |
-| `noha-portal.service` (sistema) | Portal sem privilégios de root, ativo só no hotspot |
+| `noha-portal.service` (sistema) | Painel e portal Wi-Fi na porta 80, sempre ativo, sem root |
+| `noha-admin.service` (sistema) | Operações administrativas por socket Unix restrito |
+| `noha-ngrok.service` (sistema) | Acesso HTTPS ngrok, sempre ativo após configuração |
 | `noha-update.timer` (sistema) | Verifica releases públicas a cada hora |
+| `noha-update-check.timer` (sistema) | Verifica logo após o boot e repete se estiver offline |
 
 Não altere somente `audio.microphone`/`audio.speaker` no TOML: reexecute o instalador com `--mic`/`--speaker` para atualizar também as rotas PipeWire. Dispositivos USB sem número de série podem mudar de nome ao trocar de porta; selecione-os novamente nesse caso.
 
@@ -127,7 +168,7 @@ sudoedit /etc/noha/secrets.env
 systemctl --user restart noha
 ```
 
-Após modificar personalidade ou temporizadores, reinicie o serviço. Para acompanhar estados, erros e contagem de tokens:
+Alterações manuais de personalidade ou temporizadores exigem reiniciar o serviço. Alterações pelo painel são aplicadas quando a conversa termina. Para acompanhar estados, erros e contagem de tokens:
 
 ```bash
 journalctl --user -u noha -f
@@ -139,13 +180,13 @@ journalctl --user -u pipewire -u wireplumber -b
 
 ## Atualizações automáticas
 
-O instalador habilita atualizações de [lfdelphino/Noha-Concept](https://github.com/lfdelphino/Noha-Concept), sem token GitHub. Verifica a primeira vez cerca de cinco a oito minutos após o boot e depois a cada hora, com pequeno atraso aleatório. Apenas releases estáveis com número maior que o instalado são aplicadas; commits e tags sem release não alteram o robô.
+O instalador habilita atualizações de [lfdelphino/Noha-Concept](https://github.com/lfdelphino/Noha-Concept), sem token GitHub. Uma consulta sem instalação é agendada cerca de 30 segundos após o boot; sem internet, tenta novamente a cada dois minutos. A instalação automática continua cerca de cinco a oito minutos após o boot e depois a cada hora, com pequeno atraso aleatório. O painel permite verificar ou solicitar instalação manual. Apenas releases estáveis com número maior que o instalado são aplicadas; commits e tags sem release não alteram o robô.
 
 Para instalações anteriores a esta funcionalidade, copie a versão atual do projeto ao Pi e **reexecute o instalador uma vez**, depois reinicie. Isso migra os serviços para `/opt/noha/current`, habilita o timer e instala o atualizador independente do ambiente Python da aplicação.
 
 O atualizador baixa `noha-pi.zip`, confere seu SHA-256 contra os metadados HTTPS do GitHub, rejeita caminhos/links inválidos no ZIP e prepara um ambiente Python separado. Durante o preparo, a versão atual continua funcionando. Não altera `/etc/noha`, a personalidade local, a chave, os perfis Wi-Fi nem as rotas físicas do áudio.
 
-Antes da troca, bloqueia novas saudações e aguarda até cinco minutos pela conversa em andamento e operações de rede. Se o robô continuar ocupado ou sem hardware pronto, adia a atualização para a próxima verificação. Durante a troca, reinicia voz e rede, verifica heartbeats, versão, dispositivos/ GPIO e serviços durante pelo menos 15 segundos; não realiza chamadas pagas para testar a API.
+Antes da troca, bloqueia novas saudações e aguarda até cinco minutos pela conversa em andamento e operações de rede. Se o robô continuar ocupado ou sem hardware pronto, adia a atualização para a próxima verificação. Durante a troca, reinicia voz, rede, painel, administração e ngrok, verifica heartbeats, versão, dispositivos/GPIO e serviços durante pelo menos 15 segundos; não realiza chamadas pagas para testar a API. Configurações pendentes do painel são aplicadas antes da instalação de outra versão.
 
 Uma falha de inicialização restaura o link e os arquivos de serviço anteriores. Uma interrupção de energia durante a troca é detectada por `noha-update-recover.service` no próximo boot, antes dos serviços do robô. Uma release rejeitada fica bloqueada até uma nova publicação ou tentativa manual. Os diretórios anteriores ficam preservados; acompanhe o espaço livre ao longo do tempo.
 

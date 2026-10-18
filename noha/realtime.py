@@ -8,6 +8,7 @@ import time
 from urllib.parse import urlencode
 
 from .state import ConversationState
+from .metrics import record
 
 log = logging.getLogger(__name__)
 
@@ -19,6 +20,19 @@ class APIProblem(RuntimeError):
 def safe_code(value):
     value = str(value or "unknown")
     return value if re.fullmatch(r"[a-zA-Z0-9_.-]{1,80}", value) else "unknown"
+
+
+def record_usage(model, usage):
+    values = {}
+    for key in ("input_tokens", "output_tokens"):
+        value = usage.get(key)
+        if type(value) is int and value >= 0:
+            values[key] = value
+    cached = (usage.get("input_token_details") or {}).get("cached_tokens")
+    if type(cached) is int and cached >= 0:
+        values["cached_tokens"] = cached
+    if values:
+        record(model, **values)
 
 
 class Playback:
@@ -114,6 +128,7 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
                         state.generating = False
                         generating_id = None
                     usage = response.get("usage") or {}
+                    record_usage(config.model, usage)
                     # Never log server messages or transcripts: only numeric usage counters.
                     log.info("response status=%s input_tokens=%s output_tokens=%s cached_tokens=%s",
                              safe_code(response.get("status")), int(usage.get("input_tokens", 0)),

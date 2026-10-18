@@ -62,8 +62,9 @@ class Config:
             raise ValueError("Seção desconhecida na configuração")
         config = cls(**{name: kind(**raw.get(name, {})) for name, kind in
                        (("voice", Voice), ("motion", Motion), ("audio", Audio), ("network", Network))})
-        if config.voice.model != "gpt-realtime-1.5":
-            raise ValueError("Este projeto usa gpt-realtime-1.5")
+        from .models import model_info
+        if config.voice.voice not in model_info(config.voice.model).voices:
+            raise ValueError("Voz incompatível com o modelo")
         if config.voice.eagerness not in {"low", "medium", "high", "auto"}:
             raise ValueError("Eagerness inválida")
         for section in (config.voice, config.motion, config.network):
