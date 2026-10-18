@@ -100,7 +100,8 @@ class ActivationTests(unittest.TestCase):
     def test_busy_robot_defers_without_stopping_services(self):
         with TemporaryDirectory() as folder:
             marker = Path(folder) / "update-pending"
-            with patch.object(updater, "account", return_value=SimpleNamespace()), \
+            with patch.object(updater, "STATE", Path(folder) / "state"), \
+                    patch.object(updater, "account", return_value=SimpleNamespace()), \
                     patch.object(updater, "maintenance", return_value=marker), \
                     patch.object(updater, "wait_idle", return_value=False), \
                     patch.object(updater, "command") as command:

@@ -50,7 +50,7 @@ systemctl --user start noha
 
 ## Painel de administração
 
-A versão **1.2.0 exige reexecutar o instalador uma vez**, inclusive em Pis que já recebem atualizações automáticas. Copie o projeto ao Pi, execute `sudo bash scripts/install.sh --user "$USER"` e reinicie. O instalador adiciona Avahi/mDNS, ngrok e os serviços do painel. Não publica nem configura uma conta ngrok automaticamente.
+A versão **1.2.1 exige reexecutar o instalador uma vez** ao migrar da série 1.1, inclusive em Pis que já recebem atualizações automáticas. Copie o projeto ao Pi, execute `sudo bash scripts/install.sh --user "$USER"` e reinicie. O instalador adiciona Avahi/mDNS, ngrok e os serviços do painel. Não publica nem configura uma conta ngrok automaticamente.
 
 Na mesma rede do Pi, abra **http://noha.local** no celular ou computador. Não precisa descobrir o IP atribuído pelo roteador nem conectar uma tela ao Pi. O nome funciona quando o Raspberry está conectado ao roteador como cliente Wi-Fi ou por Ethernet. Redes de convidados, isolamento de dispositivos ou bloqueio de multicast podem impedir a descoberta local. Para outro nome, use `--hostname outro-nome` no instalador; reinstalações preservam o nome registrado.
 

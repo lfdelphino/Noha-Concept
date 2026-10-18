@@ -13,8 +13,8 @@ def build(root, output, tag=None, requires_installer=False):
     package_version = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
     if not re.fullmatch(r"\d+\.\d+\.\d+", package_version) or (tag and tag != "v" + package_version):
         raise ValueError("O tag precisa ser v<versão de pyproject.toml>, por exemplo v1.1.0")
-    # 1.2.0 introduces the privileged helper, ngrok and Avahi system installation.
-    requires_installer = requires_installer or package_version == "1.2.0"
+    # Initial dashboard releases require the helper, ngrok and Avahi installation.
+    requires_installer = requires_installer or package_version in {"1.2.0", "1.2.1"}
     output.parent.mkdir(parents=True, exist_ok=True)
     with ZipFile(output, "w", ZIP_DEFLATED) as archive:
         for directory in ("noha", "config", "scripts", "systemd", "tests"):
