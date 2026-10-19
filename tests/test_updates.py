@@ -84,7 +84,6 @@ class ActivationTests(unittest.TestCase):
                     patch.object(updater, "account", return_value=SimpleNamespace()), \
                     patch.object(updater, "maintenance", return_value=status), \
                     patch.object(updater, "paths", return_value=units), \
-                    patch.object(updater, "wait_idle", return_value=True), \
                     patch.object(updater, "health", return_value=False), \
                     patch.object(updater, "switch") as switch, \
                     patch.object(updater, "command"), patch.object(updater, "user_command"):
@@ -97,17 +96,36 @@ class ActivationTests(unittest.TestCase):
                 self.assertFalse((root / "state/update-transaction.json").exists())
                 self.assertFalse(status.exists())
 
-    def test_busy_robot_defers_without_stopping_services(self):
+    def test_applies_immediately_during_conversation_and_updates_itself(self):
         with TemporaryDirectory() as folder:
-            marker = Path(folder) / "update-pending"
-            with patch.object(updater, "STATE", Path(folder) / "state"), \
+            root = Path(folder)
+            candidate = root / "releases/new"
+            (candidate / "source/scripts").mkdir(parents=True)
+            (candidate / "source/scripts/updater.py").write_text("new updater")
+            (root / "updater.py").write_text("old updater")
+            (root / "current").mkdir()
+            marker = root / "runtime/update-pending"
+            marker.parent.mkdir()
+            units = {}
+            for name in ("noha.service", "noha-network.service"):
+                units[name] = root / "units" / name
+                units[name].parent.mkdir(exist_ok=True)
+                units[name].write_text("old")
+                (candidate / "source/systemd").mkdir(parents=True, exist_ok=True)
+                (candidate / "source/systemd" / name).write_text("new")
+            # A busy, not-ready robot (conversation running, sensor unwired) must not block the update.
+            (root / "status.json").write_text('{"busy": true, "ready": false}')
+            with patch.object(updater, "ROOT", root), patch.object(updater, "STATE", root / "state"), \
                     patch.object(updater, "account", return_value=SimpleNamespace()), \
                     patch.object(updater, "maintenance", return_value=marker), \
-                    patch.object(updater, "wait_idle", return_value=False), \
-                    patch.object(updater, "command") as command:
-                self.assertFalse(updater.apply(Path(folder), {"tag": "v1.2.0"}, {}))
-                command.assert_not_called()
-                self.assertFalse(marker.exists())
+                    patch.object(updater, "paths", return_value=units), \
+                    patch.object(updater, "health", return_value=True), \
+                    patch.object(updater, "switch"), patch.object(updater, "command"), \
+                    patch.object(updater, "user_command") as user_command:
+                self.assertTrue(updater.apply(candidate, {"tag": "v1.3.2"}, {}))
+            user_command.assert_any_call(SimpleNamespace(), "stop", "noha.service")
+            self.assertEqual((root / "updater.py").read_text(), "new updater")
+            self.assertFalse(marker.exists())
 
 
 if __name__ == "__main__":

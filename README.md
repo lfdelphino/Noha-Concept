@@ -206,15 +206,15 @@ Para instalações anteriores a esta funcionalidade, copie a versão atual do pr
 
 O atualizador baixa `noha-pi.zip`, confere seu SHA-256 contra os metadados HTTPS do GitHub, rejeita caminhos/links inválidos no ZIP e prepara um ambiente Python separado. Durante o preparo, a versão atual continua funcionando. Não altera `/etc/noha`, a personalidade local, a chave, os perfis Wi-Fi nem as rotas físicas do áudio.
 
-Antes da troca, bloqueia novas saudações e aguarda até cinco minutos pela conversa em andamento e operações de rede. Se o robô continuar ocupado ou sem hardware pronto, adia a atualização para a próxima verificação. Durante a troca, reinicia voz, rede, painel, administração e ngrok, verifica heartbeats, versão, dispositivos/GPIO e serviços durante pelo menos 15 segundos; não realiza chamadas pagas para testar a API. Configurações pendentes do painel são aplicadas antes da instalação de outra versão.
+A troca é imediata, inclusive durante uma conversa, que é encerrada. Novas saudações ficam bloqueadas até o fim. Reinicia voz, rede, painel, administração e ngrok e verifica heartbeat, versão e serviços durante pelo menos 15 segundos. Sensor, áudio ou chave indisponíveis não revertem a atualização, pois uma correção desses problemas precisa conseguir ser instalada. O próprio atualizador também é substituído pela versão nova; não realiza chamadas pagas para testar a API. Configurações pendentes do painel são aplicadas antes da instalação de outra versão.
 
 Uma falha de inicialização restaura o link e os arquivos de serviço anteriores. Uma interrupção de energia durante a troca é detectada por `noha-update-recover.service` no próximo boot, antes dos serviços do robô. Uma release rejeitada fica bloqueada até uma nova publicação ou tentativa manual. Os diretórios anteriores ficam preservados; acompanhe o espaço livre ao longo do tempo.
 
 ```bash
 sudo noha-update --check       # consulta sem baixar/instalar uma nova versão
-sudo noha-update               # tenta atualizar agora, respeitando conversa em andamento
+sudo noha-update               # atualiza agora, mesmo durante uma conversa
 sudo noha-update --retry       # tenta novamente a release que falhou
-sudo noha-update --rollback    # volta à versão anterior registrada, também aguardando ociosidade
+sudo noha-update --rollback    # volta à versão anterior registrada
 systemctl list-timers noha-update.timer
 sudo journalctl -u noha-update -u noha-update-recover -b
 ```

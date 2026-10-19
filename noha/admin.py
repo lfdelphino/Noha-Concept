@@ -196,8 +196,11 @@ async def validate_gpio(pin):
     if pin != config.motion.gpio:
         # Probe as the voice user; a busy line fails without changing boot overlays.
         user = account()
-        await command("runuser", "-u", user.pw_name, "--", "/opt/noha/current/venv/bin/python", "-c",
-                      "from noha.motion import open_sensor; import sys; s=open_sensor(int(sys.argv[1])); s.close()", str(pin))
+        try:
+            await command("runuser", "-u", user.pw_name, "--", "/opt/noha/current/venv/bin/python", "-c",
+                          "from noha.motion import open_sensor; import sys; s=open_sensor(int(sys.argv[1])); s.close()", str(pin))
+        except ValueError:
+            raise ValueError(f"Não foi possível abrir o GPIO BCM{pin}; confira se outro programa usa o pino") from None
 
 
 def redact(message):

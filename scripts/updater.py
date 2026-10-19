@@ -201,26 +201,15 @@ def voice_status(user):
     return status
 
 
-def wait_idle(user, seconds):
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        try:
-            voice, network = voice_status(user), network_status()
-            if voice.get("ready") and not voice.get("busy") and network.get("mode") == "online" and not network.get("busy"):
-                return True
-        except (OSError, ValueError, RuntimeError):
-            pass
-        time.sleep(2)
-    return False
-
-
 def health(user, tag, seconds):
+    # The new code must start and heartbeat; hardware/key readiness is not its fault and must
+    # not roll back an update (a sensor fix could otherwise never install on a broken sensor).
     deadline = time.monotonic() + seconds
     stable_since = None
     while time.monotonic() < deadline:
         try:
             voice, network = voice_status(user), network_status()
-            okay = (voice.get("ready") and voice.get("version") == tag.lstrip("v")
+            okay = (voice.get("version") == tag.lstrip("v")
                     and bool(network.get("mode"))
                     and user_command(user, "is-active", "--quiet", "noha.service", check=False)
                     and command("systemctl", "is-active", "--quiet", "noha-network.service", check=False))
@@ -339,19 +328,25 @@ def recover(start_services=True):
     return True
 
 
+def update_self(target):
+    # The installer used to be the only writer of this file, so updater fixes never shipped.
+    source = target / "source/scripts/updater.py"
+    if source.is_file():
+        temporary = ROOT / "updater.py.update-tmp"
+        temporary.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        temporary.chmod(0o644)
+        temporary.replace(ROOT / "updater.py")
+
+
 def apply(target, release, settings):
     user = account()
     pending = maintenance(user)
     if not pending.parent.is_dir():
         raise RuntimeError("Serviço de voz ainda não iniciou")
+    # Updates apply immediately, ending any active conversation; the marker blocks new ones meanwhile.
     pending.touch(mode=0o644)
     try:
-        progress("waiting", message="Aguardando conversa e operações de rede terminarem.")
-        if not wait_idle(user, settings.get("idle_wait_seconds", 300)):
-            log.info("Atualização adiada: conversa, configuração ou hardware indisponível")
-            progress("deferred", message="Robô ocupado ou hardware indisponível; nova tentativa na próxima verificação.")
-            return False
-        previous = (ROOT / "current").resolve(strict=True)
+        previous =(ROOT / "current").resolve(strict=True)
         old_units = {name: path.read_text(encoding="utf-8") for name, path in paths(user).items()}
         atomic_json(STATE / "update-transaction.json", {
             "previous": str(previous), "candidate": str(target), "units": old_units, "release": release,
@@ -377,6 +372,7 @@ def apply(target, release, settings):
             state = {"current": release, "previous": str(previous), "result": "updated"}
             atomic_json(STATE / "updates.json", state)
             (STATE / "update-transaction.json").unlink()
+            update_self(target)
             log.info("Atualização aplicada: %s", release["tag"])
             progress("updated", installed=release["tag"].lstrip("v"), message="Atualização aplicada com sucesso.")
             return True
@@ -456,10 +452,10 @@ def main():
                     raise RuntimeError("Não há versão anterior registrada")
                 user = account()
                 previous = Path(state["previous"])
-                # Reuse the same journaled, idle-aware activation and health checks.
+                # Reuse the same journaled activation and health checks.
                 release = read_json(previous / "release.json")
                 current_release = state.get("current")
-                if apply(previous, {"tag": release["version"]}, {"idle_wait_seconds": 300, "health_seconds": 90}):
+                if apply(previous, {"tag": release["version"]}, {"health_seconds": 90}):
                     state = read_json(STATE / "updates.json", {})
                     state["rejected"] = current_release
                     state["result"] = "manual_rollback"

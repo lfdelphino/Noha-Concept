@@ -1,6 +1,5 @@
 [updates]
 enabled = true
 repository = "lfdelphino/Noha-Concept"
-idle_wait_seconds = 300
 health_seconds = 90
 
