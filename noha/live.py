@@ -99,8 +99,7 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
                 if now - last_check >= 5:
                     from .audio import devices
                     names = {d["name"] for d in await asyncio.to_thread(devices)}
-                    if any(n not in names for n in (audio.config.microphone, audio.config.speaker,
-                                                    audio.config.clean_source, audio.config.reference_sink)):
+                    if any(n not in names for n in audio.config.required()):
                         raise RuntimeError("USB ou AEC desconectado")
                     last_check = now
                 if now - playback.last_user >= config.idle_seconds and not audio.busy():

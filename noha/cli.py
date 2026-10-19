@@ -41,8 +41,12 @@ def doctor(config):
         names = {d["name"] for d in devices()}
     except Exception:
         names = set()
-    for label, name in (("Microfone", config.audio.microphone), ("Alto-falante", config.audio.speaker),
-                        ("Fonte AEC", config.audio.clean_source), ("Saída AEC", config.audio.reference_sink)):
+    checks = [("Microfone", config.audio.microphone), ("Alto-falante", config.audio.speaker)]
+    if config.audio.hardware_aec():
+        print("OK   Cancelamento de eco: reSpeaker XVF3800 (saída de áudio do próprio array)")
+    else:
+        checks += [("Fonte AEC PipeWire", config.audio.clean_source), ("Saída AEC PipeWire", config.audio.reference_sink)]
+    for label, name in checks:
         report(bool(name and name in names), f"{label}: {name or 'não configurado'}")
     try:
         import gi
@@ -60,6 +64,17 @@ def doctor(config):
                f"GPIO BCM{config.motion.gpio}: {value}")
     except Exception:
         report(False, "Não foi possível consultar pinctrl")
+    try:
+        from .motion import rp1_chip
+        report(True, f"Controlador GPIO RP1: gpiochip{rp1_chip()}")
+    except Exception as exc:
+        report(False, f"Controlador GPIO RP1 ({type(exc).__name__}: {exc})")
+    if config.leds.enabled:
+        from .leds import find, firmware_version
+        try:
+            report(True, f"LEDs reSpeaker XVF3800: firmware {firmware_version(find())}")
+        except Exception as exc:
+            report(False, f"LEDs reSpeaker XVF3800 ({type(exc).__name__}); confira USB e o grupo plugdev")
     print("Verifique também: systemctl status noha-network; systemctl --user status noha")
     return 1 if failures else 0
 

@@ -1,4 +1,4 @@
-"""GStreamer audio through PipeWire's Pulse compatibility server and AEC nodes."""
+"""GStreamer audio through PipeWire's Pulse compatibility server, via PipeWire or XVF3800 AEC."""
 import asyncio
 from collections import deque
 import json
@@ -8,16 +8,49 @@ RATE = 24000
 BYTES_PER_SECOND = RATE * 2
 
 
-def devices():
-    result = subprocess.run(["pw-dump"], check=True, capture_output=True, text=True, timeout=8)
+def parse_nodes(dump):
     nodes = []
-    for entry in json.loads(result.stdout):
+    for entry in json.loads(dump):
         props = entry.get("info", {}).get("props", {})
         if props.get("media.class") in {"Audio/Source", "Audio/Sink"}:
             nodes.append({"name": props.get("node.name", ""),
                           "description": props.get("node.description", ""),
                           "class": props["media.class"]})
     return nodes
+
+
+def devices():
+    result = subprocess.run(["pw-dump"], check=True, capture_output=True, text=True, timeout=8)
+    return parse_nodes(result.stdout)
+
+
+def echo_cancel_dropped(config, names):
+    # PipeWire's echo-cancel module unloads itself when a target is missing (boot order, HDMI
+    # display off, USB replug) and never comes back on its own; only a PipeWire restart reloads it.
+    return (not config.hardware_aec() and config.microphone in names and config.speaker in names
+            and not {config.clean_source, config.reference_sink} <= names)
+
+
+ECHO_CONFIG ="pipewire/pipewire.conf.d/80-noha-echo.conf"  # relative to the user's ~/.config
+
+
+def echo_cancel_config(microphone, speaker):
+    # json.dumps quoting is valid SPA-JSON; device names never become config syntax.
+    return '''context.modules = [
+  { name = libpipewire-module-echo-cancel
+    args = {
+      library.name = aec/libspa-aec-webrtc
+      audio.rate = 48000
+      audio.channels = 1
+      audio.position = [ MONO ]
+      capture.props = { node.name = noha_echo_capture target.object = MIC node.dont-fallback = true node.passive = true }
+      source.props = { node.name = noha_echo_source node.description = "Noha microphone (AEC)" }
+      sink.props = { node.name = noha_echo_sink node.description = "Noha speaker (AEC)" }
+      playback.props = { node.name = noha_echo_playback target.object = SPEAKER node.dont-fallback = true node.passive = true }
+    }
+  }
+]
+'''.replace("MIC", json.dumps(microphone)).replace("SPEAKER", json.dumps(speaker))
 
 
 class AudioIO:
@@ -36,24 +69,23 @@ class AudioIO:
         Gst.init(None)
         self.Gst = Gst
         names = {d["name"] for d in devices()}
-        required = (self.config.microphone, self.config.speaker,
-                    self.config.clean_source, self.config.reference_sink)
-        if any(not n or n not in names for n in required):
+        if any(not n or n not in names for n in self.config.required()):
             raise RuntimeError("Dispositivo USB ou cancelamento de eco ausente; execute noha doctor")
+        source, sink = self.config.endpoints()
         self.loop = asyncio.get_running_loop()
         # Set device properties separately: device identifiers never become pipeline syntax.
         self.capture = Gst.parse_launch(
             'pulsesrc name=mic buffer-time=80000 latency-time=20000 ! audioconvert ! audioresample ! '
             'audio/x-raw,format=S16LE,rate=24000,channels=1,layout=interleaved ! '
             'appsink name=capture emit-signals=true sync=false max-buffers=10 drop=false')
-        self.capture.get_by_name("mic").set_property("device", self.config.clean_source)
+        self.capture.get_by_name("mic").set_property("device", source)
         self.capture.get_by_name("capture").connect("new-sample", self._sample)
         self.playback = Gst.parse_launch(
             'appsrc name=output format=time is-live=true block=false '
             'caps="audio/x-raw,format=S16LE,rate=24000,channels=1,layout=interleaved" ! '
             'audioconvert ! audioresample ! '
             'pulsesink name=speaker sync=true async=false buffer-time=80000 latency-time=20000')
-        self.playback.get_by_name("speaker").set_property("device", self.config.reference_sink)
+        self.playback.get_by_name("speaker").set_property("device", sink)
         self.output = self.playback.get_by_name("output")
         for pipeline, state in ((self.playback, Gst.State.PLAYING), (self.capture, Gst.State.READY)):
             if pipeline.set_state(state) == Gst.StateChangeReturn.FAILURE:

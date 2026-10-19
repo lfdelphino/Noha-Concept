@@ -163,3 +163,79 @@ class ConfigTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeUSB:
+    def __init__(self):
+        self.writes = []
+
+    def ctrl_transfer(self, request_type, request, value, index, data, timeout):
+        self.writes.append((request_type, value, index, bytes(data)))
+
+
+class LedTests(unittest.TestCase):
+    def test_states_map_to_patterns(self):
+        from noha.leds import pattern_for
+        self.assertEqual(pattern_for("aquecendo_sensor", warming=True), "warming")
+        self.assertEqual(pattern_for("aquecendo_sensor"), "off")
+        self.assertEqual(pattern_for("conversando"), "listening")
+        self.assertEqual(pattern_for("conversando", speaking=True), "speaking")
+        self.assertEqual(pattern_for("erro_api_http_401"), "error")
+        self.assertEqual(pattern_for("conversando", updating=True), "updating")
+
+    def test_writes_colors_before_effect_and_only_on_change(self):
+        from noha.config import Leds
+        from noha.leds import Ring
+        device = FakeUSB()
+        ring = Ring(Leds(brightness=255), opener=lambda: device)
+        ring.show("listening")
+        ring.show("listening")
+        self.assertEqual(device.writes, [
+            (0x40, 14, 20, b"\x01"),
+            (0x40, 17, 20, (0x001830).to_bytes(4, "little") + (0x00B4FF).to_bytes(4, "little")),
+            (0x40, 12, 20, b"\x04"),
+        ])
+
+    def test_usb_failure_is_silent_and_retried_later(self):
+        from noha.config import Leds
+        from noha.leds import Ring
+        now = [0]
+        def missing():
+            raise LookupError
+        ring = Ring(Leds(), opener=missing, clock=lambda: now[0])
+        ring.show("error")
+        device = FakeUSB()
+        ring.opener = lambda: device
+        ring.show("error")
+        self.assertEqual(device.writes, [])
+        now[0] = 31
+        ring.show("error")
+        self.assertEqual(device.writes[-1], (0x40, 12, 20, b"\x03"))
+
+
+class EchoCancelTests(unittest.TestCase):
+    MIC = "alsa_input.usb-Seeed_Studio_reSpeaker_XVF3800_4-Mic_Array_114993701262801141-00.analog-stereo"
+    XVF_OUT = "alsa_output.usb-Seeed_Studio_reSpeaker_XVF3800_4-Mic_Array_114993701262801141-00.analog-stereo"
+    HDMI = "alsa_output.platform-107c701400.hdmi.hdmi-stereo"
+
+    def test_auto_uses_chip_only_when_speaker_is_the_array(self):
+        from noha.config import Audio
+        chip = Audio(microphone=self.MIC, speaker=self.XVF_OUT)
+        self.assertEqual(chip.endpoints(), (self.MIC, self.XVF_OUT))
+        self.assertEqual(chip.required(), (self.MIC, self.XVF_OUT, self.MIC, self.XVF_OUT))
+        hdmi = Audio(microphone=self.MIC, speaker=self.HDMI)
+        self.assertEqual(hdmi.endpoints(), ("noha_echo_source", "noha_echo_sink"))
+
+    def test_dropped_pipewire_aec_detected_only_when_devices_are_present(self):
+        from noha.audio import echo_cancel_dropped
+        from noha.config import Audio
+        hdmi = Audio(microphone=self.MIC, speaker=self.HDMI)
+        self.assertTrue(echo_cancel_dropped(hdmi, {self.MIC, self.HDMI}))
+        self.assertFalse(echo_cancel_dropped(hdmi, {self.MIC}))  # unplugged: a restart would not help
+        self.assertFalse(echo_cancel_dropped(hdmi, {self.MIC, self.HDMI, "noha_echo_source", "noha_echo_sink"}))
+        self.assertFalse(echo_cancel_dropped(Audio(microphone=self.MIC, speaker=self.XVF_OUT), {self.MIC, self.XVF_OUT}))
+
+    def test_forced_modes(self):
+        from noha.config import Audio
+        self.assertFalse(Audio(microphone=self.MIC, speaker=self.XVF_OUT, echo_cancel="pipewire").hardware_aec())
+        self.assertTrue(Audio(microphone=self.MIC, speaker=self.HDMI, echo_cancel="xvf3800").hardware_aec())

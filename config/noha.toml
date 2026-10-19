@@ -19,7 +19,15 @@ microphone = ""
 speaker = ""
 clean_source = "noha_echo_source"
 reference_sink = "noha_echo_sink"
-playback_latency_ms = 80 # conservative estimate used for interrupted-history truncation
+playback_latency_ms = 80
+# auto: XVF3800 hardware AEC when the speaker is the array's own jack/JST output,
+# PipeWire WebRTC AEC for any other speaker (HDMI, Pi jack, USB). Or force pipewire / xvf3800.
+echo_cancel = "auto" # conservative estimate used for interrupted-history truncation
+
+[leds]
+# reSpeaker XVF3800 status ring; failures never interrupt the voice.
+enabled = true
+brightness = 96 # 0-255
 
 [network]
 interface = "wlan0"

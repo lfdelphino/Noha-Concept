@@ -48,9 +48,29 @@ noha run --simulate-motion
 systemctl --user start noha
 ```
 
+## Alto-falante e cancelamento de eco
+
+O microfone é o reSpeaker XVF3800; o alto-falante pode ser HDMI, a saída do Pi, um dispositivo USB ou a saída P2/JST do próprio XVF3800. Com `echo_cancel = "auto"` (padrão, seção `[audio]`), alto-falante ligado ao XVF3800 usa o cancelamento de eco do chip, que recebe o próprio áudio como referência, e o instalador remove o AEC do PipeWire para não processar o som duas vezes. Qualquer outra saída usa o AEC WebRTC do PipeWire (`noha_echo_source`/`noha_echo_sink`). Para trocar de alto-falante, reexecute o instalador com o novo nome de `noha audio-list` e reinicie:
+
+```bash
+sudo bash scripts/install.sh --user "$USER" --speaker 'alsa_output.usb-Seeed_Studio_reSpeaker_XVF3800_...'
+```
+
+`--echo-cancel pipewire` ou `--echo-cancel xvf3800` força um modo; `noha doctor` mostra qual está ativo.
+
+## LEDs do reSpeaker XVF3800
+
+Com o reSpeaker XVF3800 USB (firmware USB padrão), o anel de 12 LEDs mostra o estado da Noha: âmbar pulsando enquanto o sensor aquece, azul pulsando ao conectar, direção de quem fala (DoA) enquanto escuta, verde-água enquanto fala, arco-íris durante atualizações, vermelho em erros e apagado aguardando movimento. O instalador adiciona `python3-usb`, uma regra udev para o grupo `plugdev` e inclui o usuário nesse grupo; reinicie após instalar. `noha doctor` lê a versão do firmware para confirmar o acesso. Falhas de USB nos LEDs nunca interrompem a conversa. Ajuste em `/etc/noha/noha.toml`:
+
+```toml
+[leds]
+enabled = true
+brightness = 96 # 0-255
+```
+
 ## Painel de administração
 
-A versão **1.2.1 exige reexecutar o instalador uma vez** ao migrar da série 1.1, inclusive em Pis que já recebem atualizações automáticas. Copie o projeto ao Pi, execute `sudo bash scripts/install.sh --user "$USER"` e reinicie. O instalador adiciona Avahi/mDNS, ngrok e os serviços do painel. Não publica nem configura uma conta ngrok automaticamente.
+A versão **1.3.0 exige reexecutar o instalador uma vez** (LEDs, udev e grupo plugdev), assim como a 1.2.1 ao migrar da série 1.1, inclusive em Pis que já recebem atualizações automáticas. Copie o projeto ao Pi, execute `sudo bash scripts/install.sh --user "$USER"` e reinicie. O instalador adiciona Avahi/mDNS, ngrok e os serviços do painel. Não publica nem configura uma conta ngrok automaticamente.
 
 Na mesma rede do Pi, abra **http://noha.local** no celular ou computador. Não precisa descobrir o IP atribuído pelo roteador nem conectar uma tela ao Pi. O nome funciona quando o Raspberry está conectado ao roteador como cliente Wi-Fi ou por Ethernet. Redes de convidados, isolamento de dispositivos ou bloqueio de multicast podem impedir a descoberta local. Para outro nome, use `--hostname outro-nome` no instalador; reinstalações preservam o nome registrado.
 
@@ -66,7 +86,7 @@ O painel foi desenhado primeiro para celular, com quatro áreas:
 
 - **Visão geral:** estado da voz, modelo ativo, conexão, prontidão de áudio/sensor, CPU, temperatura, memória, disco e os dois endereços do painel.
 - **Atividade:** conversas, duração, tokens informados pelo modelo, erros e reconexões, hoje/7/30 dias e por modelo. O histórico numérico persiste por 90 dias em `/var/lib/noha-metrics`, sem áudio, transcrições ou estimativas de custo. Hoje segue o fuso do Pi. Contadores não fornecidos, como tokens de voz do GPT-Live, aparecem como indisponíveis.
-- **Ajustes:** instruções do agente, modelo, voz compatível, GPIO BCM com pino físico, substituição da chave OpenAI, senha e configurações ngrok. Campos de chave vazios mantêm a credencial existente; valores salvos não são devolvidos ao navegador.
+- **Ajustes:** instruções do agente, modelo, voz compatível, GPIO BCM com pino físico, microfone, alto-falante e modo de cancelamento de eco, substituição da chave OpenAI, senha e configurações ngrok. Campos de chave vazios mantêm a credencial existente; valores salvos não são devolvidos ao navegador.
 - **Sistema:** até 100 eventos recentes com filtros e acompanhamento ao vivo; versões instalada/disponível, última verificação, estado e botões para verificar/instalar atualizações.
 
 Mudanças de voz, instruções, GPIO e chave aguardam a conversa atual terminar. O painel distingue configurações pendentes da configuração ativa. A gravação é atômica, com cópias em `/var/lib/noha/backups`; falha de inicialização restaura os arquivos anteriores. A mudança de GPIO verifica se a linha pode ser usada e não altera funções de hardware do sistema automaticamente. Desligue o Pi antes de mudar a fiação física.

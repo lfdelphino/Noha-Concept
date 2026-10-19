@@ -28,6 +28,36 @@ class Audio:
     clean_source: str = "noha_echo_source"
     reference_sink: str = "noha_echo_sink"
     playback_latency_ms: int = 80
+    echo_cancel: str = "auto"  # auto | pipewire | xvf3800
+
+    def hardware_aec(self):
+        # The XVF3800 cancels only what it plays itself: its own jack/JST output is the reference.
+        if self.echo_cancel == "auto":
+            return same_xvf3800(self.microphone, self.speaker)
+        return self.echo_cancel == "xvf3800"
+
+    def endpoints(self):
+        """(capture, playback) nodes opened by the voice pipeline."""
+        if self.hardware_aec():
+            return self.microphone, self.speaker
+        return self.clean_source, self.reference_sink
+
+    def required(self):
+        return (self.microphone, self.speaker, *self.endpoints())
+
+
+def same_xvf3800(microphone, speaker):
+    # alsa_input.usb-Seeed_..._XVF3800_..._<serial>-00.analog-stereo vs. the matching alsa_output.
+    def card(name, prefix):
+        return name.removeprefix(prefix).rpartition(".")[0] if name.startswith(prefix) else None
+    mic = card(microphone, "alsa_input.")
+    return bool(mic) and "XVF3800" in mic and mic == card(speaker, "alsa_output.")
+
+
+@dataclass
+class Leds:
+    enabled: bool = True
+    brightness: int = 96  # 0-255
 
 
 @dataclass
@@ -53,15 +83,16 @@ class Config:
     motion: Motion = field(default_factory=Motion)
     audio: Audio = field(default_factory=Audio)
     network: Network = field(default_factory=Network)
+    leds: Leds = field(default_factory=Leds)
 
     @classmethod
     def load(cls, path="/etc/noha/noha.toml"):
         raw = tomllib.loads(Path(path).read_text(encoding="utf-8"))
-        unknown = set(raw) - {"voice", "motion", "audio", "network"}
+        unknown = set(raw) - {"voice", "motion", "audio", "network", "leds"}
         if unknown:
             raise ValueError("Seção desconhecida na configuração")
         config = cls(**{name: kind(**raw.get(name, {})) for name, kind in
-                       (("voice", Voice), ("motion", Motion), ("audio", Audio), ("network", Network))})
+                       (("voice", Voice), ("motion", Motion), ("audio", Audio), ("network", Network), ("leds", Leds))})
         from .models import model_info
         if config.voice.voice not in model_info(config.voice.model).voices:
             raise ValueError("Voz incompatível com o modelo")
@@ -71,6 +102,10 @@ class Config:
             for key, value in vars(section).items():
                 if key.endswith("_seconds") and (not isinstance(value, (float, int)) or value <= 0):
                     raise ValueError(f"{key} precisa ser positivo")
+        if config.audio.echo_cancel not in {"auto", "pipewire", "xvf3800"}:
+            raise ValueError("echo_cancel: auto, pipewire ou xvf3800")
+        if type(config.leds.enabled) is not bool or type(config.leds.brightness) is not int                 or not 0 <= config.leds.brightness <= 255:
+            raise ValueError("LEDs: enabled booleano e brightness 0-255")
         if not 0 <= config.motion.gpio <= 27:
             raise ValueError("GPIO BCM inválido")
         if config.network.gateway != "192.168.50.1":

@@ -36,11 +36,14 @@
     <section id="settings" class="view" hidden>
       <div class="page-heading"><p class="eyebrow">CONFIGURAÇÕES</p><h1>Do seu jeito.</h1><p class="muted">Personalidade, hardware e acesso em um só lugar.</p></div>
       <div id="pending-settings" class="notice" hidden></div>
-      <form id="voice-form" class="card form-card"><div class="card-heading"><span class="card-icon">✦</span><div><h2>Voz e personalidade</h2><p class="muted small">Aplicadas quando a conversa atual terminar.</p></div></div>
+      <form id="voice-form" class="card form-card"><div class="card-heading"><span class="card-icon">✦</span><div><h2>Voz, personalidade e hardware</h2><p class="muted small">Aplicadas quando a conversa atual terminar.</p></div></div>
         <label for="model">Modelo</label><select id="model" required></select><p id="model-note" class="muted small"></p>
         <label for="voice">Voz</label><select id="voice" required></select>
         <label for="instructions">Instruções do agente</label><textarea id="instructions" rows="9" maxlength="60000" required spellcheck="false"></textarea>
         <label for="gpio">Sensor de movimento · GPIO BCM</label><select id="gpio" required></select><p class="muted small">Confira a ligação física antes de trocar. Funções ocupadas são rejeitadas.</p>
+        <label for="microphone">Microfone</label><select id="microphone" required></select>
+        <label for="speaker">Alto-falante</label><select id="speaker" required></select>
+        <label for="echo-cancel">Cancelamento de eco</label><select id="echo-cancel" required><option value="auto">Automático</option><option value="pipewire">PipeWire (qualquer alto-falante)</option><option value="xvf3800">reSpeaker XVF3800 (alto-falante no array)</option></select><p id="echo-note" class="muted small"></p>
         <label for="openai-key">Chave OpenAI</label><input id="openai-key" type="password" autocomplete="new-password" maxlength="512" spellcheck="false"><p id="openai-configured" class="muted small">Deixe vazio para manter a chave salva.</p>
         <button type="submit" class="primary">Salvar configurações</button><p class="form-result" role="status"></p>
       </form>

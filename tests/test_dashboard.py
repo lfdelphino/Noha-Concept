@@ -58,6 +58,51 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(personality.read_text(), "Original")
             self.assertEqual(admin.read_json(root / "config-result.json")["state"], "error")
 
+    async def test_audio_change_switches_echo_cancel_and_recovers(self):
+        mic = "alsa_input.usb-Seeed_Studio_reSpeaker_XVF3800_4-Mic_Array_1-00.analog-stereo"
+        hdmi = "alsa_output.platform-107c701400.hdmi.hdmi-stereo"
+        chip = "alsa_output.usb-Seeed_Studio_reSpeaker_XVF3800_4-Mic_Array_1-00.analog-stereo"
+        with TemporaryDirectory() as folder, ExitStack() as stack:
+            root = Path(folder)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            personality = root / "personality.txt"
+            personality.write_text("Olá", encoding="utf-8")
+            config = root / "noha.toml"
+            config.write_text('[voice]\ninstructions = ' + json.dumps(str(personality)) + '\n[motion]\ngpio = 3\n'
+                              '[audio]\nmicrophone = ' + json.dumps(mic) + '\nspeaker = ' + json.dumps(hdmi) + '\n', encoding="utf-8")
+            (root / "secrets.env").write_text("OPENAI_API_KEY=key\n")
+            echo = root / "home/.config/pipewire/pipewire.conf.d/80-noha-echo.conf"
+            echo.parent.mkdir(parents=True)
+            echo.write_text("old echo config")
+            stack.enter_context(patch.object(admin, "ETC", root))
+            stack.enter_context(patch.object(admin, "STATE", root))
+            stack.enter_context(patch.object(admin, "voice_runtime", return_value=runtime))
+            stack.enter_context(patch.object(admin, "update_lock", side_effect=lambda: nullcontext()))
+            stack.enter_context(patch.object(admin.os, "chown", create=True))
+            stack.enter_context(patch.object(admin, "validate_gpio", new=AsyncMock()))
+            stack.enter_context(patch.object(admin, "account", return_value=SimpleNamespace(pw_dir=str(root / "home"), pw_uid=0, pw_gid=0)))
+            stack.enter_context(patch.object(admin, "audio_devices", new=AsyncMock(return_value=[
+                {"name": mic, "class": "Audio/Source"}, {"name": hdmi, "class": "Audio/Sink"}, {"name": chip, "class": "Audio/Sink"}])))
+            service = stack.enter_context(patch.object(admin, "user_systemctl", new=AsyncMock()))
+            stack.enter_context(patch.object(admin, "voice_status", return_value={
+                "stale": False, "busy": False, "updated": 10**15, "model": "gpt-realtime-1.5", "gpio": 3, "audio_ready": True}))
+            helper = admin.Admin()
+            base = {"model": "gpt-realtime-1.5", "voice": "marin", "gpio": 3, "instructions": "Olá"}
+            with self.assertRaises(ValueError):
+                await helper.save_settings({**base, "speaker": "alsa_output.usb-unplugged.analog-stereo"})
+            await helper.save_settings({**base, "speaker": chip, "echo_cancel": "auto"})
+            await helper.apply_pending()
+            self.assertIn(json.dumps(chip), config.read_text())
+            self.assertFalse(echo.exists())  # the chip cancels its own output; no second AEC
+            service.assert_any_call("restart", *admin.AUDIO_STACK)
+            # Interrupted before confirmation: recovery restores the PipeWire file and config.
+            admin.atomic_write(root / "config-transaction.json", {str(echo): {"text": "old echo config", "mode": 0o644},
+                                                                  str(config): {"text": "restored", "mode": 0o644}})
+            await helper.recover_config()
+            self.assertEqual(echo.read_text(), "old echo config")
+            self.assertEqual(config.read_text(), "restored")
+
     async def test_login_csrf_password_revision_and_throttle(self):
         revision = ["first"]
         async def helper(self, app, operation, method="GET", data=None):

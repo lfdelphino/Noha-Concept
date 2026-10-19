@@ -13,6 +13,7 @@ import tomllib
 
 from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 
+from .audio import ECHO_CONFIG, echo_cancel_config, parse_nodes
 from .config import Config
 from .metrics import summary
 from .models import GPIO_PINS, catalog, model_info
@@ -84,11 +85,53 @@ def account():
     return pwd.getpwnam(read_json(STATE / "install.json")["user"])
 
 
-async def user_systemctl(*args, check=True):
+async def user_command(*args, check=True, timeout=15):
     user = account()
     env = {**os.environ, "HOME": user.pw_dir, "XDG_RUNTIME_DIR": f"/run/user/{user.pw_uid}",
            "DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{user.pw_uid}/bus"}
-    return await command("runuser", "-u", user.pw_name, "--", "systemctl", "--user", *args, check=check, env=env)
+    return await command("runuser", "-u", user.pw_name, "--", *args, check=check, env=env, timeout=timeout)
+
+
+async def user_systemctl(*args, check=True):
+    return await user_command("systemctl", "--user", *args, check=check)
+
+
+DEVICE_NAME = re.compile(r"[A-Za-z0-9_.:+-]{1,200}")
+AUDIO_STACK = ("pipewire.service", "pipewire-pulse.service", "wireplumber.service")
+
+
+async def audio_devices():
+    # PipeWire is per-user: list the voice account's graph, not root's.
+    nodes = parse_nodes(await user_command("pw-dump", timeout=10))
+    return [n for n in nodes if DEVICE_NAME.fullmatch(n["name"]) and not n["name"].startswith("noha_")]
+
+
+async def validate_audio(data):
+    audio = Config.load(ETC / "noha.toml").audio
+    if data.get("echo_cancel", audio.echo_cancel) not in {"auto", "pipewire", "xvf3800"}:
+        raise ValueError("Modo de cancelamento de eco inválido")
+    changed = [(key, kind) for key, kind in (("microphone", "Audio/Source"), ("speaker", "Audio/Sink"))
+               if data.get(key, getattr(audio, key)) != getattr(audio, key)]
+    if changed:
+        available = {(n["name"], n["class"]) for n in await audio_devices()}
+        for key, kind in changed:
+            if not isinstance(data[key], str) or (data[key], kind) not in available:
+                raise ValueError("Dispositivo de áudio indisponível; conecte-o e atualize a página")
+
+
+def echo_path():
+    return Path(account().pw_dir) / ".config" / ECHO_CONFIG
+
+
+def write_user_file(path, text):
+    # PipeWire reads this as the voice user; the admin umask (0077) must not leave root-only dirs.
+    user = account()
+    for parent in reversed(path.parents):
+        if not parent.exists():
+            parent.mkdir(mode=0o755)
+            os.chown(parent, user.pw_uid, user.pw_gid)
+    atomic_write(path, text, mode=0o644, backup=True)
+    os.chown(path, user.pw_uid, user.pw_gid)
 
 
 def voice_status():
@@ -106,6 +149,8 @@ def get_settings():
     ngrok = read_json(ETC / "ngrok.json")
     pending = read_json(STATE / "config-pending.json")
     return {"model": config.voice.model, "voice": config.voice.voice, "gpio": config.motion.gpio,
+            "microphone": config.audio.microphone, "speaker": config.audio.speaker,
+            "echo_cancel": config.audio.echo_cancel,
             "instructions": Path(config.voice.instructions).read_text(encoding="utf-8"),
             "openai_key_configured": bool(secret_key()), "ngrok_token_configured": bool(ngrok.get("authtoken")),
             "ngrok_url": ngrok.get("url", ""), "local_url": f"http://{socket.gethostname()}.local",
@@ -232,7 +277,7 @@ class Admin:
         return {"entries": rows}
 
     async def save_settings(self, data):
-        if set(data) - {"model", "voice", "gpio", "instructions", "openai_key"}:
+        if set(data) - {"model", "voice", "gpio", "instructions", "openai_key", "microphone", "speaker", "echo_cancel"}:
             raise ValueError("Campo desconhecido")
         model = model_info(data.get("model"))
         if data.get("voice") not in model.voices:
@@ -244,6 +289,7 @@ class Admin:
         if not isinstance(key, str) or (key and not re.fullmatch(r"[A-Za-z0-9_-]{10,512}", key)):
             raise ValueError("Formato da chave OpenAI inválido")
         await validate_gpio(data.get("gpio"))
+        await validate_audio(data)
         with update_lock():
             if (STATE / "config-pending.json").exists():
                 raise ValueError("Uma configuração já está aguardando aplicação")
@@ -295,15 +341,27 @@ class Admin:
                 config_path = ETC / "noha.toml"
                 cfg = Config.load(config_path)
                 instructions_path = Path(cfg.voice.instructions)
-                targets = [config_path, instructions_path, ETC / "secrets.env"]
-                originals = {str(p): {"text": p.read_text(encoding="utf-8"), "mode": p.stat().st_mode & 0o777} for p in targets}
+                audio = {key: data.get(key, getattr(cfg.audio, key)) for key in ("microphone", "speaker", "echo_cancel")}
+                audio_changed = any(value != getattr(cfg.audio, key) for key, value in audio.items())
+                echo = echo_path() if audio_changed else None
+                targets = [config_path, instructions_path, ETC / "secrets.env", *([echo] if echo else [])]
+                # A file that did not exist is recorded as None: recovery removes it again.
+                originals = {str(p): {"text": p.read_text(encoding="utf-8"), "mode": p.stat().st_mode & 0o777}
+                             if p.exists() else {"text": None, "mode": 0o644} for p in targets}
                 atomic_write(STATE / "config-transaction.json", originals)
                 text = originals[str(config_path)]["text"]
                 for section, key, value in (("voice", "model", data["model"]), ("voice", "voice", data["voice"]),
-                                            ("motion", "gpio", data["gpio"])):
+                                            ("motion", "gpio", data["gpio"]),
+                                            *(("audio", key, value) for key, value in audio.items())):
                     text = edit_toml(text, section, key, value)
                 atomic_write(config_path, text, mode=0o644, backup=True)
-                Config.load(config_path)
+                new = Config.load(config_path)
+                if echo:
+                    if new.audio.hardware_aec():
+                        echo.unlink(missing_ok=True)
+                    else:
+                        write_user_file(echo, echo_cancel_config(new.audio.microphone, new.audio.speaker))
+                    await user_systemctl("restart", *AUDIO_STACK)
                 atomic_write(instructions_path, data["instructions"], mode=0o644, backup=True)
                 if data.get("openai_key"):
                     secrets_text = originals[str(ETC / "secrets.env")]["text"]
@@ -314,7 +372,8 @@ class Admin:
                 await user_systemctl("restart", "noha.service")
                 for _ in range(30):
                     state = voice_status()
-                    if not state["stale"] and state.get("updated", 0) >= started and state.get("model") == data["model"] and state.get("gpio") == data["gpio"]:
+                    if (not state["stale"] and state.get("updated", 0) >= started and state.get("model") == data["model"]
+                            and state.get("gpio") == data["gpio"] and (state.get("audio_ready") or not audio_changed)):
                         break
                     await asyncio.sleep(1)
                 else:
@@ -333,7 +392,16 @@ class Admin:
             return
         with update_lock():
             for path, original in transaction.items():
-                atomic_write(Path(path), original["text"], mode=original["mode"])
+                path = Path(path)
+                if path.name == Path(ECHO_CONFIG).name:
+                    if original["text"] is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        write_user_file(path, original["text"])
+                else:
+                    atomic_write(path, original["text"], mode=original["mode"])
+            if any(Path(path).name == Path(ECHO_CONFIG).name for path in transaction):
+                await user_systemctl("restart", *AUDIO_STACK)
             await user_systemctl("restart", "noha.service")
             (STATE / "config-transaction.json").unlink()
             (STATE / "config-pending.json").unlink(missing_ok=True)
@@ -382,6 +450,10 @@ class Admin:
                 result = await self.status()
             elif operation == "settings" and request.method == "GET":
                 result = get_settings()
+                try:
+                    result["audio_devices"] = await audio_devices()
+                except Exception:
+                    result["audio_devices"] = []  # PipeWire down: the page still shows the saved names
             elif operation == "settings" and request.method == "POST":
                 result = await self.save_settings(data)
             elif operation == "ngrok" and request.method == "POST":

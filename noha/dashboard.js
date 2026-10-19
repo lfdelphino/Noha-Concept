@@ -72,12 +72,29 @@ function voices(selected) {
   $("voice").value = model.voices.includes(selected) ? selected : model.voices[0];
   text("model-note", model.deprecated ? "Modelo legado, marcado como descontinuado pela OpenAI." : model.transport === "live" ? "GPT-Live · escuta e fala contínuas." : "Realtime · áudio em tempo real.");
 }
+function devices(id, kind, selected) {
+  const options = state.settings.audio_devices.filter(d => d.class === kind).map(d => new Option(d.description || d.name, d.name));
+  // Keep an unplugged saved device visible instead of silently switching to another one.
+  if (selected && !options.some(o => o.value === selected)) options.unshift(new Option(`${selected} (desconectado)`, selected));
+  $(id).replaceChildren(...options); $(id).value = selected;
+}
+function echoNote() {
+  // Mirrors Audio.same_xvf3800: same card, input and output.
+  const card = (name, prefix) => name.startsWith(prefix) ? name.slice(prefix.length).replace(/\.[^.]*$/, "") : null;
+  const mic = card($("microphone").value, "alsa_input."), chip = !!mic && mic.includes("XVF3800") && mic === card($("speaker").value, "alsa_output.");
+  const mode = $("echo-cancel").value, hardware = mode === "xvf3800" || (mode === "auto" && chip);
+  text("echo-note", hardware ? "O XVF3800 cancela o eco do próprio áudio. Use somente com o alto-falante ligado ao array."
+    : "PipeWire cancela o eco. Trocar o áudio reinicia o PipeWire.");
+}
+for (const id of ["microphone", "speaker", "echo-cancel"]) $(id).addEventListener("change", echoNote);
 async function settings() {
   const data = await api("settings"); state.settings = data;
   if (!state.dirty.has("voice-form")) {
     $("model").replaceChildren(...data.models.map(model => { const option = new Option(model.label, model.id); option.disabled = model.retired; return option; }));
     $("model").value = data.model; voices(data.voice); $("instructions").value = data.instructions;
     $("gpio").replaceChildren(...Object.entries(data.gpio_pins).map(([gpio, pin]) => new Option(`BCM ${gpio} · pino físico ${pin}`, gpio))); $("gpio").value = data.gpio;
+    devices("microphone", "Audio/Source", data.microphone); devices("speaker", "Audio/Sink", data.speaker);
+    $("echo-cancel").value = data.echo_cancel; echoNote();
   }
   if (!state.dirty.has("ngrok-form")) $("ngrok-url").value = data.ngrok_url;
   text("openai-configured", data.openai_key_configured ? "Chave configurada. Deixe vazio para mantê-la." : "Nenhuma chave configurada.");
@@ -97,7 +114,7 @@ $("logout").onclick = async () => { try { await api("logout", {}); } finally { l
 document.querySelectorAll("form.form-card").forEach(form => { form.addEventListener("input", () => state.dirty.add(form.id)); form.addEventListener("change", () => state.dirty.add(form.id)); });
 $("model").onchange = () => voices($("voice").value);
 async function save(form, operation, data, after) { const button = form.querySelector("button[type=submit]"), result = form.querySelector(".form-result"); button.disabled = true; result.classList.remove("error"); result.textContent = "Salvando…"; try { const saved = await api(operation, data); result.textContent = saved.message || "Salvo."; state.dirty.delete(form.id); await after?.(saved); } catch (error) { result.textContent = error.message; result.classList.add("error"); } finally { button.disabled = false; } }
-$("voice-form").onsubmit = async event => { event.preventDefault(); await save(event.currentTarget, "settings", {model: $("model").value, voice: $("voice").value, gpio: Number($("gpio").value), instructions: $("instructions").value, openai_key: $("openai-key").value}, () => { $("openai-key").value = ""; $("pending-settings").hidden = false; text("pending-settings", "Configuração pendente. Aguardando o fim da conversa atual."); }); };
+$("voice-form").onsubmit = async event => { event.preventDefault(); await save(event.currentTarget, "settings", {model: $("model").value, voice: $("voice").value, gpio: Number($("gpio").value), microphone: $("microphone").value, speaker: $("speaker").value, echo_cancel: $("echo-cancel").value, instructions: $("instructions").value, openai_key: $("openai-key").value}, () => { $("openai-key").value = ""; $("pending-settings").hidden = false; text("pending-settings", "Configuração pendente. Aguardando o fim da conversa atual."); }); };
 $("ngrok-form").onsubmit = async event => { event.preventDefault(); await save(event.currentTarget, "ngrok", {url: $("ngrok-url").value, authtoken: $("ngrok-token").value}, saved => { $("ngrok-token").value = ""; setLink("public-url", saved.url); notice(`ngrok reconectando. Endereço: ${saved.url}`); }); };
 $("password-form").onsubmit = async event => { event.preventDefault(); if ($("new-password").value !== $("confirm-password").value) { const result = event.currentTarget.querySelector(".form-result"); result.textContent = "As senhas não coincidem."; result.classList.add("error"); return; } await save(event.currentTarget, "password", {current: $("current-password").value, password: $("new-password").value}, () => { $("password-form").reset(); loggedOut("Senha alterada. Entre com a nova senha."); }); };
 document.querySelectorAll("[data-days]").forEach(button => button.onclick = async () => { state.days = Number(button.dataset.days); document.querySelectorAll("[data-days]").forEach(b => b.setAttribute("aria-pressed", String(b === button))); try { await usage(); } catch (error) { notice(error.message, true); } });

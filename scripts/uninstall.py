@@ -47,7 +47,8 @@ def main():
              Path("/etc/systemd/system/noha-update.timer"), Path("/etc/systemd/system/noha-update-recover.service"),
              Path("/etc/systemd/system/noha-update-check.timer"), Path("/etc/systemd/system/noha-update-check.service"),
              Path("/etc/systemd/system/noha-update-boot-check.service"), Path("/etc/systemd/system/noha-admin.service"),
-             Path("/etc/systemd/system/noha-ngrok.service"), Path("/etc/avahi/services/noha.service")]
+             Path("/etc/systemd/system/noha-ngrok.service"), Path("/etc/avahi/services/noha.service"),
+             Path("/etc/udev/rules.d/90-noha-respeaker.rules")]
     for path in files:
         path.unlink(missing_ok=True)
     user_run("systemctl", "--user", "daemon-reload")

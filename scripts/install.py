@@ -52,6 +52,8 @@ def main():
     parser.add_argument("--user", default=os.environ.get("SUDO_USER"))
     parser.add_argument("--mic", help="PipeWire node.name estável do microfone")
     parser.add_argument("--speaker", help="PipeWire node.name estável do alto-falante")
+    parser.add_argument("--echo-cancel", choices=("auto", "pipewire", "xvf3800"),
+                        help="auto (padrão): XVF3800 se o alto-falante for a saída do próprio array; senão PipeWire")
     parser.add_argument("--country", help="País Wi-Fi de duas letras; solicitado se ainda não configurado")
     parser.add_argument("--disable-i2c", action="store_true", help="Desativa I2C após conflito no GPIO3; requer reiniciar")
     parser.add_argument("--hostname", default=None, help="Nome mDNS do Pi (padrão na primeira instalação: noha)")
@@ -99,7 +101,7 @@ def main():
     print("Instalando dependências de voz, GPIO e rede…")
     run("apt-get", "update")
     run("apt-get", "install", "-y", "python3-venv", "python3-gi", "python3-gst-1.0",
-        "python3-gpiozero", "python3-lgpio", "gir1.2-gstreamer-1.0", "gstreamer1.0-tools",
+        "python3-gpiozero", "python3-lgpio", "python3-usb", "gir1.2-gstreamer-1.0", "gstreamer1.0-tools",
         "gstreamer1.0-plugins-base", "gstreamer1.0-plugins-good", "pipewire", "pipewire-pulse",
         "wireplumber", "libspa-0.2-modules", "dnsmasq-base", "network-manager", "nftables", "iw",
         "avahi-daemon", "avahi-utils", "libnss-mdns", "ca-certificates", "gnupg")
@@ -146,7 +148,7 @@ def main():
         run("groupadd", "--system", "noha")
     if subprocess.run(["getent", "passwd", "noha-ngrok"], stdout=subprocess.DEVNULL).returncode:
         run("useradd", "--system", "--user-group", "--no-create-home", "--shell", "/usr/sbin/nologin", "noha-ngrok")
-    run("usermod", "-a", "-G", "audio,gpio,noha", args.user)
+    run("usermod", "-a", "-G", "audio,gpio,plugdev,noha", args.user)
     manifest_path = STATE / "install.json"
     linger_before = old_manifest.get("linger_before", Path(f"/var/lib/systemd/linger/{args.user}").exists())
     run("loginctl", "enable-linger", args.user)
@@ -203,6 +205,11 @@ def main():
     content = config_path.read_text()
     for key, value in (("microphone", mic), ("speaker", speaker)):
         content = re.sub(rf"(?m)^{key}\s*=.*$", lambda _: f"{key} = {json.dumps(value)}", content)
+    echo_cancel = args.echo_cancel or existing.get("audio", {}).get("echo_cancel", "auto")
+    if re.search(r"(?m)^echo_cancel\s*=", content):
+        content = re.sub(r"(?m)^echo_cancel\s*=.*$", lambda _: f"echo_cancel = {json.dumps(echo_cancel)}", content)
+    else:  # configurations from 1.2.x and older
+        content = re.sub(r"(?m)^\[audio\]\s*$", lambda m: f"{m.group(0)}\necho_cancel = {json.dumps(echo_cancel)}", content, count=1)
     write(config_path, content)
     if not (ETC / "personality.txt").exists():
         write(ETC / "personality.txt", (ROOT / "config/personality.txt").read_text())
@@ -228,28 +235,27 @@ def main():
     os.chown(metrics_dir, account.pw_uid, account.pw_gid)
     os.chmod(metrics_dir, 0o700)
 
+    # reSpeaker XVF3800 LED control from the user service, without root.
+    write(Path("/etc/udev/rules.d/90-noha-respeaker.rules"),
+          'SUBSYSTEM=="usb", ATTR{idVendor}=="2886", ATTR{idProduct}=="001a", MODE="0660", GROUP="plugdev"\n')
+    run("udevadm", "control", "--reload-rules")
+    run("udevadm", "trigger", "--subsystem-match=usb", "--attr-match=idVendor=2886")
+
+    from noha.audio import ECHO_CONFIG, echo_cancel_config
+    from noha.config import Audio
+    hardware_aec = Audio(microphone=mic, speaker=speaker, echo_cancel=echo_cancel).hardware_aec()
     user_config = Path(account.pw_dir) / ".config"
-    echo_path = user_config / "pipewire/pipewire.conf.d/80-noha-echo.conf"
-    echo = '''context.modules = [
-  { name = libpipewire-module-echo-cancel
-    args = {
-      library.name = aec/libspa-aec-webrtc
-      audio.rate = 48000
-      audio.channels = 1
-      audio.position = [ MONO ]
-      capture.props = { node.name = noha_echo_capture target.object = MIC node.dont-fallback = true node.passive = true }
-      source.props = { node.name = noha_echo_source node.description = "Noha microphone (AEC)" }
-      sink.props = { node.name = noha_echo_sink node.description = "Noha speaker (AEC)" }
-      playback.props = { node.name = noha_echo_playback target.object = SPEAKER node.dont-fallback = true node.passive = true }
-    }
-  }
-]
-'''.replace("MIC", json.dumps(mic)).replace("SPEAKER", json.dumps(speaker))
-    write(echo_path, echo)
+    echo_path = user_config / ECHO_CONFIG
+    owned = []
+    if hardware_aec:
+        # Speaker is the XVF3800 itself: a second, software AEC would only degrade the chip's output.
+        echo_path.unlink(missing_ok=True)
+    else:
+        write(echo_path, echo_cancel_config(mic, speaker))
+        owned += [echo_path, echo_path.parent, echo_path.parent.parent]
     user_unit = user_config / "systemd/user/noha.service"
     write(user_unit, (ROOT / "systemd/noha.service").read_text())
-    for path in (echo_path, echo_path.parent, echo_path.parent.parent,
-                 user_unit, user_unit.parent, user_unit.parent.parent, user_config):
+    for path in (*owned, user_unit, user_unit.parent, user_unit.parent.parent, user_config):
         os.chown(path, account.pw_uid, account.pw_gid)
     for name in ("noha-network.service", "noha-portal.service", "noha-admin.service", "noha-ngrok.service"):
         write(Path("/etc/systemd/system") / name, (ROOT / "systemd" / name).read_text())
@@ -267,6 +273,9 @@ def main():
     user_run("systemctl", "--user", "daemon-reload")
     user_run("systemctl", "--user", "restart", "pipewire.service", "pipewire-pulse.service", "wireplumber.service")
     for _ in range(10):
+        if hardware_aec:
+            print("Cancelamento de eco: reSpeaker XVF3800 (alto-falante na saída do array).")
+            break
         snapshot = json.loads(user_run("pw-dump", capture=True).stdout)
         names = {n.get("info", {}).get("props", {}).get("node.name") for n in snapshot}
         if {"noha_echo_source", "noha_echo_sink"}.issubset(names):

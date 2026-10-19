@@ -5,7 +5,8 @@ import os
 from pathlib import Path
 import time
 
-from .audio import AudioIO
+from .audio import AudioIO, echo_cancel_dropped
+from .leds import Ring, pattern_for
 from .motion import open_sensor
 from .realtime import APIProblem, conversation
 from .state import MotionGate
@@ -32,6 +33,17 @@ def heartbeat(**fields):
     temp.replace(path)
 
 
+async def restart_audio_stack():
+    process = await asyncio.create_subprocess_exec(
+        "systemctl", "--user", "restart", "pipewire.service", "pipewire-pulse.service", "wireplumber.service",
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+    try:
+        await asyncio.wait_for(process.wait(), 30)
+    except TimeoutError:
+        process.kill()
+        await process.wait()
+
+
 def update_status(state):
     heartbeat(state=state)
     log.info("voice state=%s", state)
@@ -45,12 +57,14 @@ async def run(config, simulate=False):
     heartbeat(model=config.voice.model, gpio=config.motion.gpio, audio_ready=False, busy=False)
     sensor = None
     active = None
+    current_audio = None
+    ring = Ring(config.leds)
     trigger = runtime_dir() / "trigger"
     trigger.unlink(missing_ok=True)
     gate = MotionGate(time.monotonic(), config.motion.warmup_seconds,
                       config.motion.rearm_seconds, config.motion.greeting_cooldown_seconds)
     next_sensor_retry = 0
-    next_heartbeat = next_audio_check = 0
+    next_heartbeat = next_audio_check = next_aec_restart = 0
     audio_ready = False
     if simulate:
         trigger.touch()
@@ -61,9 +75,10 @@ async def run(config, simulate=False):
         if not key:
             update_status("chave_ausente: configure /etc/noha/secrets.env")
             return
+        nonlocal current_audio
         greet = True
         for attempt, delay in enumerate((1, 2, 4, 8, 16)):
-            audio = AudioIO(config.audio)
+            audio = current_audio = AudioIO(config.audio)
             try:
                 instructions = Path(config.voice.instructions).read_text(encoding="utf-8")
                 audio.start()
@@ -94,6 +109,7 @@ async def run(config, simulate=False):
                     return
             finally:
                 audio.close()
+                current_audio = None
             if attempt < 4:
                 record(config.voice.model, reconnects=1)
                 await asyncio.sleep(delay)
@@ -139,11 +155,17 @@ async def run(config, simulate=False):
                 from .audio import devices
                 try:
                     names = {d["name"] for d in await asyncio.to_thread(devices)}
-                    audio_ready = all(n and n in names for n in (config.audio.microphone, config.audio.speaker,
-                                                                config.audio.clean_source, config.audio.reference_sink))
+                    audio_ready = all(n and n in names for n in config.audio.required())
+                    if active is None and now >= next_aec_restart and echo_cancel_dropped(config.audio, names):
+                        log.warning("AEC PipeWire ausente com microfone e alto-falante presentes; reiniciando PipeWire")
+                        next_aec_restart = now + 120
+                        await restart_audio_stack()
                 except Exception:
                     audio_ready = False
                 next_audio_check = now + 10
+            ring.show(pattern_for(_status.get("state", ""), warming=now - gate.boot < gate.warmup,
+                                  speaking=bool(current_audio and current_audio.busy()),
+                                  updating=updating))
             if now >= next_heartbeat:
                 ready = bool(sensor and audio_ready and os.environ.get("OPENAI_API_KEY", "").strip()
                              and Path(config.voice.instructions).is_file())
@@ -157,5 +179,6 @@ async def run(config, simulate=False):
             await asyncio.gather(active, return_exceptions=True)
         if sensor:
             sensor.close()
+        ring.close()
         update_status("parado")
 
