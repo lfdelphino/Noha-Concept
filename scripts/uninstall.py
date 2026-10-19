@@ -51,6 +51,8 @@ def main():
              Path("/etc/udev/rules.d/90-noha-respeaker.rules")]
     for path in files:
         path.unlink(missing_ok=True)
+    from kiosk import remove as kiosk_remove
+    kiosk_remove(data["user"])
     user_run("systemctl", "--user", "daemon-reload")
     user_run("systemctl", "--user", "restart", "pipewire.service", "pipewire-pulse.service", "wireplumber.service")
     run("systemctl", "daemon-reload")

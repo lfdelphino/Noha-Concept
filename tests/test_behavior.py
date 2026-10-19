@@ -9,7 +9,7 @@ from noha.config import Config, Network
 from noha.controller import Controller
 from noha.network import split_nm, validate_credentials
 from noha.realtime import Playback, safe_code
-from noha.state import ConversationState, MotionGate
+from noha.state import ConversationState, MotionGate, MotionLog
 
 
 class MotionTests(unittest.TestCase):
@@ -23,6 +23,22 @@ class MotionTests(unittest.TestCase):
         gate.update(151, False)
         gate.update(182, False)
         self.assertTrue(gate.update(183, True))
+
+    def test_dashboard_sensor_readiness_and_timeline(self):
+        gate = MotionGate(0)
+        self.assertEqual(gate.readiness(20), ("aquecendo", 40))
+        self.assertEqual(gate.readiness(60), ("pronto", 0))
+        self.assertTrue(gate.update(60, True))
+        self.assertEqual(gate.readiness(61, busy=True), ("conversando", 0))
+        gate.update(70, False)
+        self.assertEqual(gate.readiness(90), ("rearmando", 90))  # cooldown outlasts the quiet period
+        log = MotionLog(window=600)
+        self.assertTrue(log.update(1000, True))
+        self.assertFalse(log.update(1001, True))
+        self.assertTrue(log.update(1005, False))
+        self.assertEqual((log.snapshot(), log.last), ([[1000, 1005]], 1001))
+        log.update(1700, True)
+        self.assertEqual(log.snapshot(), [[1700, None]])  # older intervals leave the 10 minute window
 
     def test_idle_counts_from_noha_last_word_not_from_noise(self):
         state = ConversationState(10)

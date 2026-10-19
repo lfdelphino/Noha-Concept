@@ -57,6 +57,7 @@ def main():
     parser.add_argument("--country", help="País Wi-Fi de duas letras; solicitado se ainda não configurado")
     parser.add_argument("--disable-i2c", action="store_true", help="Desativa I2C após conflito no GPIO3; requer reiniciar")
     parser.add_argument("--hostname", default=None, help="Nome mDNS do Pi (padrão na primeira instalação: noha)")
+    parser.add_argument("--no-kiosk", action="store_true", help="Não abrir o painel em tela cheia na tela do Pi")
     args = parser.parse_args()
     if os.geteuid() != 0:
         sys.exit("Execute com sudo bash scripts/install.sh --user SEU_USUARIO")
@@ -293,6 +294,9 @@ def main():
     run("systemctl", "enable", "noha-update-recover.service")
     run("systemctl", "enable", "--now", "noha-update.timer")
     run("systemctl", "enable", "--now", "noha-update-check.timer")
+    if not args.no_kiosk:
+        from kiosk import setup as kiosk_setup
+        kiosk_setup(args.user)
     # New audio/gpio/noha group membership takes effect reliably after reboot.
     print("\nInstalado. Reinicie o Pi para aplicar grupos e iniciar Noha sem login.")
     print("API key: /etc/noha/secrets.env (não publique esse arquivo)")

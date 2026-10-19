@@ -1,7 +1,7 @@
 <!doctype html>
-<html lang="pt-BR">
+<html lang="pt-BR" translate="no">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta charset="utf-8"><meta name="google" content="notranslate"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#132a28"><title>Noha · Painel</title>
   <link rel="stylesheet" href="/dashboard.css"><script defer src="/dashboard.js"></script>
 </head>
@@ -22,6 +22,7 @@
     <section id="overview" class="view">
       <div class="page-heading"><p class="eyebrow">VISÃO GERAL</p><h1>Olá, Noha.</h1><p class="muted">Um olhar sobre o que está acontecendo agora.</p></div>
       <article class="hero-card"><div class="hero-top"><span class="eyebrow">ANFITRIÃO DE VOZ</span><span id="voice-badge" class="badge">Aguardando</span></div><div class="voice-orb" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div><h2 id="voice-state">Aguardando o robô</h2><p id="active-model">—</p><div class="hero-footer"><span id="voice-ready">Estado indisponível</span><span id="uptime">—</span></div></article>
+      <article class="card sensor"><div class="sensor-head"><span id="motion-dot" class="motion-dot" aria-hidden="true"></span><div class="sensor-text"><h3>Sensor de movimento</h3><p id="motion-state" class="value">—</p><p id="motion-detail" class="muted small">—</p></div><span id="gate-badge" class="badge">—</span></div><div id="motion-timeline" class="timeline" role="img" aria-label="Detecções dos últimos 10 minutos"></div><div class="timeline-axis muted small"><span>10 min atrás</span><span id="motion-count">—</span><span>agora</span></div></article>
       <div class="section-title"><h2>Conexões</h2><span class="muted small">Ao vivo</span></div>
       <div class="cards two"><article class="card"><span class="card-icon">⌁</span><h3>Rede</h3><p id="network-state" class="value">—</p><p id="network-detail" class="muted small">—</p></article><article class="card"><span class="card-icon">↗</span><h3>ngrok</h3><p id="ngrok-state" class="value">—</p><p class="muted small">Acesso pela internet</p></article></div>
       <article class="card addresses"><h3>Seu painel, em dois endereços</h3><label>Na rede local</label><div class="address"><a id="local-url" href="http://noha.local">http://noha.local</a><button class="quiet copy" data-copy="local-url" aria-label="Copiar endereço local">Copiar</button></div><label>Pela internet</label><div class="address"><a id="public-url">Configure o ngrok</a><button class="quiet copy" data-copy="public-url" aria-label="Copiar endereço ngrok">Copiar</button></div></article>

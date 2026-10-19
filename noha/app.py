@@ -9,7 +9,7 @@ from .audio import AudioIO, AudioUnavailable, echo_cancel_dropped, missing, prof
 from .leds import Ring, pattern_for
 from .motion import open_sensor
 from .realtime import APIProblem, api_message, close_problem, conversation, over_budget
-from .state import MotionGate
+from .state import MotionGate, MotionLog
 from .metrics import record, spent_today
 from .models import model_info
 from importlib.metadata import version
@@ -64,6 +64,7 @@ async def run(config, simulate=False):
     trigger.unlink(missing_ok=True)
     gate = MotionGate(time.monotonic(), config.motion.warmup_seconds,
                       config.motion.rearm_seconds, config.motion.greeting_cooldown_seconds)
+    motion = MotionLog()
     next_sensor_retry = 0
     next_heartbeat = next_audio_check = next_aec_restart = 0
     audio_ready = False
@@ -150,6 +151,8 @@ async def run(config, simulate=False):
             if manual:
                 trigger.unlink(missing_ok=True)
             detected = bool(sensor and sensor.value)
+            if motion.update(time.time(), detected):
+                next_heartbeat = 0  # show motion edges on the dashboard right away
             updating = any((runtime_dir() / name).exists() for name in ("update-pending", "config-pending"))
             motion_trigger = gate.update(now, detected, active is not None or updating)
             if active is None and not updating and (manual or motion_trigger):
@@ -194,8 +197,11 @@ async def run(config, simulate=False):
             if now >= next_heartbeat:
                 ready = bool(sensor and audio_ready and os.environ.get("OPENAI_API_KEY", "").strip()
                              and Path(config.voice.instructions).is_file())
+                gate_state, gate_seconds = gate.readiness(now, active is not None)
                 heartbeat(busy=active is not None, ready=ready, updating=updating,
-                          audio_ready=audio_ready, audio_missing=audio_missing, gpio_ready=sensor is not None)
+                          audio_ready=audio_ready, audio_missing=audio_missing, gpio_ready=sensor is not None,
+                          motion=detected, last_motion=motion.last, motion_history=motion.snapshot(),
+                          gate=gate_state, gate_seconds=round(gate_seconds))
                 next_heartbeat = now + 2
             await asyncio.sleep(0.1)
     finally:

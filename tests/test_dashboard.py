@@ -12,7 +12,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from noha import admin, metrics
 from noha.config import Network, Voice
-from noha.dashboard import Dashboard, is_recovery, make_app
+from noha.dashboard import SESSIONS, Dashboard, is_recovery, make_app
 from noha.live import LivePlayback, start_event
 from noha.models import model_info
 from noha.passwords import password_record, verify_password
@@ -132,6 +132,33 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
                 for _ in range(5):
                     self.assertEqual((await client.post("/api/login", json={"password": "wrong"}, headers=origin)).status, 401)
                 self.assertEqual((await client.post("/api/login", json={"password": "admin"}, headers=origin)).status, 429)
+
+    async def test_kiosk_login_only_on_the_device_and_survives_restart(self):
+        async def helper(self, app, operation, method="GET", data=None):
+            if operation == "kiosk":
+                return (200, {"revision": "r"}) if data.get("token") == "local-token" else (401, {"error": "Token inválido"})
+            if operation == "auth":
+                return 200, {"revision": "r"}
+            return 200, {"ngrok_url": "https://example.ngrok-free.app"}
+        app = make_app(Network())
+        app.cleanup_ctx.clear()
+        with patch.object(Dashboard, "call", helper):
+            async with TestClient(TestServer(app)) as client:
+                self.assertEqual((await client.get("/kiosk?token=wrong", allow_redirects=False)).status, 403)
+                # ngrok also connects from loopback, but forwards the visitor's address and host.
+                tunneled = await client.get("/kiosk?token=local-token", allow_redirects=False,
+                                            headers={"X-Forwarded-For": "203.0.113.9"})
+                self.assertEqual(tunneled.status, 404)
+                public = await client.get("/kiosk?token=local-token", allow_redirects=False,
+                                          headers={"Host": "example.ngrok-free.app"})
+                self.assertEqual(public.status, 404)
+                login = await client.get("/kiosk?token=local-token", allow_redirects=False)
+                self.assertEqual((login.status, login.headers["Location"]), (302, "/"))
+                self.assertEqual((await client.get("/api/status")).status, 200)
+                app[SESSIONS].clear()  # portal restart
+                self.assertEqual((await client.get("/api/status")).status, 200)
+                app[SESSIONS].clear()
+                self.assertEqual((await client.get("/api/status", headers={"X-Forwarded-For": "203.0.113.9"})).status, 401)
 
     async def test_hotspot_dispatch_uses_socket_destination_not_host(self):
         def request(local, host):

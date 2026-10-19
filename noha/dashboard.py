@@ -17,6 +17,7 @@ ADMIN = web.AppKey("admin", ClientSession)
 SESSIONS = web.AppKey("sessions", dict)
 COOKIE = "noha_session"
 LIFETIME = 8 * 3600
+KIOSK_LIFETIME = 10 * 365 * 86400  # the local display stays logged in; revoke by replacing kiosk-token
 
 
 def is_recovery(request, gateway):
@@ -26,6 +27,15 @@ def is_recovery(request, gateway):
         return False
     address = ipaddress.ip_address(local[0])
     return str(getattr(address, "ipv4_mapped", None) or address) == gateway
+
+
+def on_device(request):
+    """A browser on the Pi itself. ngrok also connects from loopback, but with its own Host and
+    X-Forwarded-For headers, so a public visitor can never pass this check."""
+    peer = request.transport.get_extra_info("peername") if request.transport else None
+    hostname = urlsplit("//" + request.headers.get("Host", "")).hostname
+    return (bool(peer) and ipaddress.ip_address(peer[0]).is_loopback and hostname in {"localhost", "127.0.0.1", "::1"}
+            and not any(h in request.headers for h in ("X-Forwarded-For", "X-Forwarded-Host", "Forwarded")))
 
 
 def digest(value):
@@ -42,17 +52,27 @@ class Dashboard:
         async with app[ADMIN].request(method, "http://localhost/" + operation, **kwargs) as response:
             return response.status, await response.json()
 
+    async def kiosk_session(self, app, token):
+        code, result = await self.call(app, "kiosk", "POST", {"token": token})
+        if code != 200 or "revision" not in result:
+            return None
+        session = {"csrf": secrets.token_urlsafe(32), "revision": result["revision"], "expires": time.time() + KIOSK_LIFETIME}
+        app[SESSIONS][digest(token)] = session
+        return session
+
     async def session(self, request):
         token = request.cookies.get(COOKIE, "")
         session = request.app[SESSIONS].get(digest(token))
-        if not session or session["expires"] < time.time():
-            request.app[SESSIONS].pop(digest(token), None)
-            raise web.HTTPUnauthorized()
-        code, auth = await self.call(request.app, "auth")
-        if code != 200 or session["revision"] != auth.get("revision"):
-            request.app[SESSIONS].pop(digest(token), None)
-            raise web.HTTPUnauthorized()
-        return session
+        if session and session["expires"] >= time.time():
+            code, auth = await self.call(request.app, "auth")
+            if code == 200 and session["revision"] == auth.get("revision"):
+                return session
+        request.app[SESSIONS].pop(digest(token), None)
+        # Sessions live in memory: after a restart or password change the local display's
+        # cookie (its kiosk token) is checked again instead of showing the login screen.
+        if token and on_device(request) and (session := await self.kiosk_session(request.app, token)):
+            return session
+        raise web.HTTPUnauthorized()
 
     async def handle(self, request):
         app = request.app
@@ -86,6 +106,15 @@ class Dashboard:
         if path in assets and request.method == "GET":
             return web.Response(body=files("noha").joinpath(path[1:]).read_bytes(),
                                 content_type=assets[path])
+        if path == "/kiosk" and request.method == "GET":
+            if not on_device(request):
+                raise web.HTTPNotFound()
+            token = request.query.get("token", "")
+            if not token or not await self.kiosk_session(app, token):
+                raise web.HTTPForbidden(text="Token do painel local inválido")
+            response = web.Response(status=302, headers={"Location": "/"})
+            response.set_cookie(COOKIE, token, httponly=True, samesite="Strict", max_age=KIOSK_LIFETIME, path="/")
+            return response
         if path == "/api/login" and request.method == "POST":
             # Trust client-address forwarding only through the loopback ngrok upstream.
             address = request.remote or "unknown"
@@ -136,7 +165,7 @@ class Dashboard:
                         _, payload["logs"] = await self.call(app, "logs", data={"service": request.query.get("service", "voice"),
                                                                               "level": request.query.get("level", "info")})
                     await response.write(("data: " + json.dumps(payload, ensure_ascii=False) + "\n\n").encode())
-                    await asyncio.sleep(4)
+                    await asyncio.sleep(2)  # fast enough for the live motion indicator
             except (ConnectionError, asyncio.CancelledError, web.HTTPUnauthorized):
                 pass
             return response

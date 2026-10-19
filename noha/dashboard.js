@@ -21,10 +21,32 @@ async function api(path, data) {
   return result;
 }
 function setLink(id, value, fallback) { text(id, value || fallback); if (value) $(id).href = value; else $(id).removeAttribute("href"); }
+const ago = seconds => seconds < 60 ? `${Math.max(1, Math.round(seconds))} s` : seconds < 3600 ? `${Math.floor(seconds / 60)} min` : `${Math.floor(seconds / 3600)} h`;
+const clock = epoch => new Date(epoch * 1000).toLocaleTimeString("pt-BR");
+const gates = {aquecendo: "Aquecendo", conversando: "Em conversa", rearmando: "Rearmando", pronto: "Pronto para cumprimentar"};
+function motionCard(voice) {
+  // Positions use the Pi's clock (heartbeat time), not the browser's.
+  const now = voice.updated || Date.now() / 1000, span = 600, since = now - span, history = voice.motion_history || [];
+  const missing = voice.gpio_ready === false;
+  $("motion-dot").classList.toggle("on", !voice.stale && !missing && !!voice.motion);
+  text("motion-state", voice.stale ? "Estado desatualizado" : missing ? "Sensor indisponível" : voice.motion ? "Movimento detectado agora" : "Sem movimento");
+  text("motion-detail", missing ? `Confira a ligação no GPIO ${voice.gpio ?? "—"}` : voice.last_motion ? `Último movimento há ${ago(now - voice.last_motion)} · ${clock(voice.last_motion)}` : "Nenhum movimento desde que o serviço iniciou");
+  text("gate-badge", voice.stale || !gates[voice.gate] ? "—" : ["aquecendo", "rearmando"].includes(voice.gate) ? `${gates[voice.gate]} · ${voice.gate_seconds} s` : gates[voice.gate]);
+  const visible = history.filter(([, end]) => (end ?? now) >= since), root = $("motion-timeline");
+  root.replaceChildren(...visible.map(([start, end]) => {
+    const mark = document.createElement("i"), from = Math.max(start, since), to = end ?? now;
+    mark.style.left = `${100 * (from - since) / span}%`; mark.style.width = `${100 * (to - from) / span}%`;
+    mark.title = `${clock(start)} – ${end ? clock(end) : "agora"} (${ago(to - start)})`;
+    return mark;
+  }));
+  const count = visible.length === 1 ? "1 detecção" : `${visible.length || "Nenhuma"} detecç${visible.length ? "ões" : "ão"}`;
+  text("motion-count", count); root.setAttribute("aria-label", `${count} de movimento nos últimos 10 minutos`);
+}
 function updateStatus(status) {
   state.lastStatus = status;
   const voice = status.voice || {}, system = status.system || {}, tunnel = status.ngrok || {}, updates = status.updates || {};
   text("voice-state", voice.stale ? "Estado de voz desatualizado" : nameOf(voice.state));
+  motionCard(voice);
   text("voice-badge", voice.stale ? "Sem sinal" : voice.busy ? "Em conversa" : voice.ready ? "Pronta" : "Atenção");
   text("active-model", [voice.model || status.model, voice.spent_today == null ? "" : `hoje ${usd(voice.spent_today)}${voice.daily_budget ? ` de ${usd(voice.daily_budget)}` : ""}`].filter(Boolean).join(" · "));
   const absent = voice.audio_missing?.length ? `Não encontrado: ${voice.audio_missing.join(", ")}` : "";
@@ -32,7 +54,8 @@ function updateStatus(status) {
   text("voice-ready", voice.stale ? "Aguardando heartbeat" : voice.detail || (voice.ready ? "Áudio e sensor prontos" : problems || "Confira áudio, sensor e chave"));
   document.querySelector(".hero-card").classList.toggle("speaking", !!voice.busy && !voice.stale);
   text("uptime", `${duration(system.uptime_seconds)} ligada`);
-  text("network-state", nameOf(status.network?.mode)); text("network-detail", status.network?.ssid || status.network?.message);
+  text("network-state", nameOf(status.network?.mode)); const network = status.network || {};
+  text("network-detail", network.wifi ? `Wi-Fi ${network.wifi}` : network.mode === "configuracao" ? `Rede de configuração ${network.ssid}` : network.message);
   text("ngrok-state", nameOf(tunnel.state)); text("hardware", voice.stale ? "Estado desatualizado" : `GPIO ${voice.gpio ?? "—"} · ${voice.audio_ready ? "Áudio OK" : absent || "Verifique áudio"}`);
   setLink("local-url", status.local_url); setLink("public-url", tunnel.url, "Configure o ngrok");
   text("cpu", system.cpu_percent == null ? "—" : `${system.cpu_percent.toLocaleString("pt-BR")} %`); $("cpu-bar").value = system.cpu_percent || 0;

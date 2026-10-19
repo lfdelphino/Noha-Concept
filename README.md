@@ -84,14 +84,25 @@ Digite a nova senha e confirme; Enter nas duas perguntas restaura `admin`. A sen
 
 O painel foi desenhado primeiro para celular, com quatro áreas:
 
-- **Visão geral:** estado da voz, modelo ativo, conexão, prontidão de áudio/sensor, CPU, temperatura, memória, disco e os dois endereços do painel.
-- **Atividade:** conversas, duração, tokens informados pelo modelo, erros e reconexões, hoje/7/30 dias e por modelo. O histórico numérico persiste por 90 dias em `/var/lib/noha-metrics`, sem áudio, transcrições ou estimativas de custo. Hoje segue o fuso do Pi. Contadores não fornecidos, como tokens de voz do GPT-Live, aparecem como indisponíveis.
+- **Visão geral:** estado da voz, modelo ativo e gasto estimado do dia; sensor de movimento ao vivo (detecção agora, último movimento, aquecendo/rearmando/pronto e as detecções dos últimos 10 minutos); conexão, prontidão de áudio, CPU, temperatura, memória, disco e os dois endereços do painel.
+- **Atividade:** conversas, duração, tokens informados pelo modelo, erros e reconexões, hoje/7/30 dias e por modelo. O custo é estimado pelos preços publicados da OpenAI. O histórico numérico persiste por 90 dias em `/var/lib/noha-metrics`, sem áudio ou transcrições. Hoje segue o fuso do Pi. Contadores não fornecidos, como tokens de voz do GPT-Live, aparecem como indisponíveis.
 - **Ajustes:** instruções do agente, modelo, voz compatível, GPIO BCM com pino físico, microfone, alto-falante e modo de cancelamento de eco, substituição da chave OpenAI, senha e configurações ngrok. Campos de chave vazios mantêm a credencial existente; valores salvos não são devolvidos ao navegador.
 - **Sistema:** até 100 eventos recentes com filtros e acompanhamento ao vivo; versões instalada/disponível, última verificação, estado e botões para verificar/instalar atualizações.
 
 Mudanças de voz, instruções, GPIO e chave aguardam a conversa atual terminar. O painel distingue configurações pendentes da configuração ativa. A gravação é atômica, com cópias em `/var/lib/noha/backups`; falha de inicialização restaura os arquivos anteriores. A mudança de GPIO verifica se a linha pode ser usada e não altera funções de hardware do sistema automaticamente. Desligue o Pi antes de mudar a fiação física.
 
 O seletor inclui GPT Realtime 1.5, GPT Live 1, Realtime 2.1 Mini, 2.1, 2 e as famílias GPT-4o Realtime. Modelos legados recebem indicação; IDs retirados ficam desabilitados. O acesso depende da sua conta OpenAI e um erro não causa troca silenciosa de modelo. GPT-Live tem um adaptador separado; respostas faladas, interrupções e saudações precisam de validação com o hardware definitivo.
+
+### Tela do próprio Pi
+
+O instalador configura a tela ligada ao Pi para abrir o painel em tela cheia, já autenticado, a cada boot: login automático do desktop, Chromium em modo quiosque (reaberto se fechar) e tela sem descanso, o que também mantém a saída de áudio HDMI disponível. Use `--no-kiosk` para não configurar. Para ativar ou remover depois:
+
+```bash
+sudo python3 scripts/kiosk.py --user "$USER"
+sudo python3 scripts/kiosk.py --user "$USER" --remove
+```
+
+O login automático usa um token próprio em `/etc/noha/kiosk-token`, legível apenas pelo root e pela conta do desktop, independente da senha do painel. O endereço `/kiosk` só responde a navegadores no próprio Pi: o ngrok também conecta pelo loopback, mas com Host e `X-Forwarded-For` próprios, e é recusado. Para revogar o acesso da tela, remova o painel local ou apague o token e execute o script de novo.
 
 ### Acesso ngrok sempre ativo
 

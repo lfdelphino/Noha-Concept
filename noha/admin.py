@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import socket
 import time
@@ -17,6 +18,7 @@ from .audio import ECHO_CONFIG, echo_cancel_config, parse_nodes
 from .config import Config
 from .metrics import summary
 from .models import GPIO_PINS, catalog, model_info
+from .network import split_nm
 from .passwords import password_record, verify_password
 
 ETC = Path("/etc/noha")
@@ -227,6 +229,14 @@ class Admin:
         except Exception:
             # A network controller failure must not take down the dashboard.
             network = {"mode": "indisponivel"}
+        try:
+            # The controller's "ssid" is the setup hotspot; report the network actually in use.
+            rows = await command("nmcli", "-t", "-f", "ACTIVE,SSID", "device", "wifi", "list", "--rescan", "no",
+                                 timeout=3, check=False)
+            network["wifi"] = next((fields[1] for fields in map(split_nm, rows.splitlines())
+                                    if len(fields) == 2 and fields[0] == "yes"), "")
+        except Exception:
+            network["wifi"] = ""
         ngrok = read_json(ETC / "ngrok.json")
         tunnel = {"url": ngrok.get("url", ""), "state": "configuracao_necessaria"}
         if ngrok.get("authtoken") and ngrok.get("url"):
@@ -453,6 +463,13 @@ class Admin:
                     return web.json_response({"error": "Senha atual inválida"}, status=403)
                 atomic_write(ETC / "dashboard-password.json", await asyncio.to_thread(password_record, data.get("password")), backup=True)
                 result = {"accepted": True}
+            elif operation == "kiosk" and request.method == "POST":
+                # The local display's credential (scripts/kiosk.py); separate from the password.
+                path = ETC / "kiosk-token"
+                expected = path.read_text(encoding="utf-8").strip() if path.exists() else ""
+                if not expected or not secrets.compare_digest(str(data.get("token", "")), expected):
+                    return web.json_response({"error": "Token inválido"}, status=401)
+                result = {"revision": read_json(ETC / "dashboard-password.json").get("revision")}
             elif operation == "auth" and request.method == "GET":
                 result = {"revision": read_json(ETC / "dashboard-password.json").get("revision")}
             elif operation == "status" and request.method == "GET":
