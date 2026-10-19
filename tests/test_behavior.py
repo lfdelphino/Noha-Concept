@@ -165,6 +165,27 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class GpioChipTests(unittest.TestCase):
+    def test_rp1_compatibility_symlink_is_not_a_second_chip(self):
+        import os
+        import sys
+        from tempfile import TemporaryDirectory
+        from types import SimpleNamespace
+        from noha.motion import rp1_chip
+        labels = {0: "pinctrl-rp1", 10: "gpio-brcmstb@107d508500"}
+        lgpio = SimpleNamespace(gpiochip_open=lambda n: n, gpiochip_close=lambda h: None,
+                                gpio_get_chip_info=lambda h: [0, 54, f"gpiochip{h}", labels[h]])
+        with TemporaryDirectory() as folder, patch.dict(sys.modules, {"lgpio": lgpio}):
+            dev = Path(folder)
+            (dev / "gpiochip0").touch()
+            (dev / "gpiochip10").touch()
+            try:
+                os.symlink(dev / "gpiochip0", dev / "gpiochip4")
+            except OSError:
+                self.skipTest("symlinks unavailable")
+            self.assertEqual(rp1_chip(dev), 0)
+
+
 class FakeUSB:
     def __init__(self):
         self.writes = []

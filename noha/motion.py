@@ -1,12 +1,13 @@
 from pathlib import Path
 
 
-def rp1_chip():
+def rp1_chip(dev=Path("/dev")):
     # RP1 moved from gpiochip4 to gpiochip0 on newer Pi 5 kernels, and some kernels
     # expose no sysfs label; ask the character device for its label instead.
     import lgpio
     chips = []
-    for device in sorted(Path("/dev").glob("gpiochip*")):
+    # Newer kernels keep /dev/gpiochip4 as a compatibility symlink to gpiochip0: count devices once.
+    for device in sorted({path.resolve() for path in dev.glob("gpiochip*")}):
         number = int(device.name.removeprefix("gpiochip"))
         try:
             handle = lgpio.gpiochip_open(number)
