@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 from pathlib import Path
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -23,17 +24,17 @@ class MotionTests(unittest.TestCase):
         gate.update(182, False)
         self.assertTrue(gate.update(183, True))
 
-    def test_idle_waits_for_speech_generation_and_playback(self):
+    def test_idle_counts_from_noha_last_word_not_from_noise(self):
         state = ConversationState(10)
-        self.assertFalse(state.idle(69, 60, False))
-        self.assertFalse(state.idle(80, 60, True))
-        state.speaking = True
-        self.assertFalse(state.idle(80, 60, False))
-        state.speaking = False
+        self.assertFalse(state.idle(39, 30, False))
+        state.speaking = True  # VAD noise alone must not keep the session open
+        self.assertTrue(state.idle(40, 30, False))
+        self.assertFalse(state.idle(50, 30, True))  # Noha talking restarts the idle clock
         state.generating = True
-        self.assertFalse(state.idle(80, 60, False))
+        self.assertFalse(state.idle(60, 30, False))
         state.generating = False
-        self.assertTrue(state.idle(80, 60, False))
+        self.assertFalse(state.idle(89, 30, False))
+        self.assertTrue(state.idle(90, 30, False))
 
 
 class FakeAudio:
@@ -144,7 +145,7 @@ class ConfigTests(unittest.TestCase):
     def test_example_and_prompt_are_usable(self):
         cfg = Config.load("config/noha.toml")
         self.assertEqual(cfg.motion.gpio, 3)
-        self.assertEqual(cfg.voice.model, "gpt-realtime-1.5")
+        self.assertEqual(cfg.voice.model, "gpt-realtime-2.1-mini")
         self.assertNotIn("OPENAI_API_KEY", Path("config/noha.toml").read_text())
         self.assertIn("Delphino", Path("config/personality.txt").read_text(encoding="utf-8"))
 
@@ -159,6 +160,18 @@ class ConfigTests(unittest.TestCase):
     def test_server_error_text_cannot_leak_into_logs(self):
         self.assertEqual(safe_code("invalid_api_key"), "invalid_api_key")
         self.assertEqual(safe_code("Your key is sk-secret123"), "unknown")
+
+    def test_error_close_frame_becomes_api_problem(self):
+        from websockets.exceptions import ConnectionClosedError
+        from websockets.frames import Close
+        from noha.realtime import api_message, close_problem
+        quota = ConnectionClosedError(Close(1013, "insufficient_quota.credit_balance_exhausted"), None)
+        self.assertEqual(str(close_problem(quota)), "insufficient_quota.credit_balance_exhausted")
+        self.assertIn("sem créditos", api_message(str(close_problem(quota))))
+        self.assertIsNone(close_problem(ConnectionClosedError(Close(1011, "keepalive ping timeout"), None)))
+        self.assertIsNone(close_problem(ConnectionClosedError(None, None)))
+        self.assertIsNone(close_problem(OSError()))
+        self.assertIn("código weird_thing", api_message("weird_thing"))
 
 
 if __name__ == "__main__":
@@ -256,7 +269,93 @@ class EchoCancelTests(unittest.TestCase):
         self.assertFalse(echo_cancel_dropped(hdmi, {self.MIC, self.HDMI, "noha_echo_source", "noha_echo_sink"}))
         self.assertFalse(echo_cancel_dropped(Audio(microphone=self.MIC, speaker=self.XVF_OUT), {self.MIC, self.XVF_OUT}))
 
+    def test_missing_names_the_device_before_its_echo_nodes(self):
+        from noha.audio import missing
+        from noha.config import Audio
+        hdmi = Audio(microphone=self.MIC, speaker=self.HDMI)
+        self.assertEqual(missing(hdmi, {self.MIC, "noha_echo_source"}), ["Alto-falante"])
+        self.assertEqual(missing(hdmi, {self.MIC, self.HDMI}),
+                         ["Microfone com cancelamento de eco", "Alto-falante com cancelamento de eco"])
+        self.assertEqual(missing(hdmi, {self.MIC, self.HDMI, "noha_echo_source", "noha_echo_sink"}), [])
+        self.assertEqual(missing(Audio(microphone=self.MIC, speaker=self.XVF_OUT), {self.XVF_OUT}), ["Microfone"])
+
+    def test_hdmi_card_without_profile_is_detected(self):
+        from noha.audio import card_of, parse_nodes, profile_missing
+        from noha.config import Audio
+        dump = json.dumps([{"info": {"props": {"media.class": "Audio/Device", "device.name": "alsa_card.platform-107c701400.hdmi"}}},
+                           {"info": {"props": {"media.class": "Audio/Source", "node.name": self.MIC}}}])
+        names = {n["name"] for n in parse_nodes(dump)}
+        self.assertEqual(card_of(self.XVF_OUT), "alsa_card.usb-Seeed_Studio_reSpeaker_XVF3800_4-Mic_Array_114993701262801141-00")
+        self.assertTrue(profile_missing(Audio(microphone=self.MIC, speaker=self.HDMI), names))
+        self.assertFalse(profile_missing(Audio(microphone=self.MIC, speaker=self.HDMI), names | {self.HDMI}))
+        self.assertFalse(profile_missing(Audio(microphone=self.MIC, speaker=self.XVF_OUT), names))  # unplugged USB
+
     def test_forced_modes(self):
         from noha.config import Audio
         self.assertFalse(Audio(microphone=self.MIC, speaker=self.XVF_OUT, echo_cancel="pipewire").hardware_aec())
         self.assertTrue(Audio(microphone=self.MIC, speaker=self.HDMI, echo_cancel="xvf3800").hardware_aec())
+
+
+class FakeSocket:
+    def __init__(self, events):
+        self.events, self.sent = [json.dumps(e) for e in events], []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def send(self, raw):
+        self.sent.append(json.loads(raw))
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self.events:
+            raise StopAsyncIteration
+        await asyncio.sleep(0)
+        return self.events.pop(0)
+
+
+class RealtimeSessionTests(unittest.IsolatedAsyncioTestCase):
+    MIC = EchoCancelTests.MIC
+
+    async def run_session(self, speaker, events):
+        from types import SimpleNamespace
+        from noha.config import Audio, Voice
+        from noha.realtime import conversation
+        audio = SimpleNamespace(config=Audio(microphone=self.MIC, speaker=speaker), input=asyncio.Queue(),
+                                start_capture=lambda: None, check=lambda: None, flush=lambda: None,
+                                busy=lambda tail_ms=0: False, played_ms=lambda: 0, begin_item=lambda: None)
+        socket = FakeSocket([{"type": "session.updated"}, *events])
+        with patch("websockets.asyncio.client.connect", lambda *a, **k: socket), \
+             patch("noha.realtime.spent_today", return_value=0), patch("noha.realtime.record"), \
+             patch("noha.audio.devices", return_value=[{"name": n} for n in audio.config.required()]):
+            with self.assertRaises(ConnectionError):  # the fake server hangs up after its script
+                await conversation(Voice(), "key", "Instruções", audio)
+        return socket.sent
+
+    async def test_short_detections_are_deleted_and_speech_gets_a_reply(self):
+        sent = await self.run_session(EchoCancelTests.HDMI, [
+            {"type": "input_audio_buffer.speech_started", "item_id": "noise", "audio_start_ms": 1000},
+            {"type": "input_audio_buffer.speech_stopped", "item_id": "noise", "audio_end_ms": 1300},
+            {"type": "input_audio_buffer.committed", "item_id": "noise"},
+            {"type": "input_audio_buffer.speech_started", "item_id": "visitor", "audio_start_ms": 2000},
+            {"type": "input_audio_buffer.speech_stopped", "item_id": "visitor", "audio_end_ms": 3500},
+            {"type": "input_audio_buffer.committed", "item_id": "visitor"},
+            {"type": "error", "error": {"code": "conversation_already_has_active_response"}},
+        ])
+        session = sent[0]["session"]
+        self.assertFalse(session["audio"]["input"]["turn_detection"]["create_response"])
+        self.assertFalse(session["audio"]["input"]["turn_detection"]["interrupt_response"])  # HDMI: no barge-in
+        self.assertEqual(session["truncation"]["token_limits"]["post_instructions"], 4000)
+        self.assertEqual(session["audio"]["input"]["noise_reduction"], {"type": "far_field"})
+        greeting = sent[1]["response"]["instructions"]
+        self.assertTrue(greeting.startswith("Instruções") and "INÍCIO DA VISITA" in greeting)
+        self.assertEqual(sent[2:], [{"type": "conversation.item.delete", "item_id": "noise"}, {"type": "response.create"}])
+
+    async def test_xvf3800_speaker_keeps_barge_in(self):
+        sent = await self.run_session(EchoCancelTests.XVF_OUT, [])
+        self.assertTrue(sent[0]["session"]["audio"]["input"]["turn_detection"]["interrupt_response"])

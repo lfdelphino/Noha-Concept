@@ -29,10 +29,14 @@ class MotionGate:
 
 @dataclass
 class ConversationState:
-    last_user: float
+    last_user: float  # last accepted visitor turn or Noha's last word, not every VAD detection
     speaking: bool = False
     generating: bool = False
 
     def idle(self, now, timeout, playback_busy):
-        return not (self.speaking or self.generating or playback_busy) and now - self.last_user >= timeout
+        # VAD "speech" alone must not keep a session open: noise and echo trigger it all night.
+        if self.generating or playback_busy:
+            self.last_user = now
+            return False
+        return now - self.last_user >= timeout
 

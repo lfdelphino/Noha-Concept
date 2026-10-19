@@ -44,6 +44,7 @@
         <label for="microphone">Microfone</label><select id="microphone" required></select>
         <label for="speaker">Alto-falante</label><select id="speaker" required></select>
         <label for="echo-cancel">Cancelamento de eco</label><select id="echo-cancel" required><option value="auto">Automático</option><option value="pipewire">PipeWire (qualquer alto-falante)</option><option value="xvf3800">reSpeaker XVF3800 (alto-falante no array)</option></select><p id="echo-note" class="muted small"></p>
+        <label for="daily-budget">Limite diário de custo (US$)</label><input id="daily-budget" type="number" min="0" max="1000" step="0.5" inputmode="decimal" required><p class="muted small">Estimativa pelos preços da OpenAI. Atingido o limite, Noha não inicia conversas até a meia-noite. 0 desativa.</p>
         <label for="openai-key">Chave OpenAI</label><input id="openai-key" type="password" autocomplete="new-password" maxlength="512" spellcheck="false"><p id="openai-configured" class="muted small">Deixe vazio para manter a chave salva.</p>
         <button type="submit" class="primary">Salvar configurações</button><p class="form-result" role="status"></p>
       </form>

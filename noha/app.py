@@ -5,12 +5,12 @@ import os
 from pathlib import Path
 import time
 
-from .audio import AudioIO, echo_cancel_dropped
+from .audio import AudioIO, AudioUnavailable, echo_cancel_dropped, missing, profile_missing
 from .leds import Ring, pattern_for
 from .motion import open_sensor
-from .realtime import APIProblem, conversation
+from .realtime import APIProblem, api_message, close_problem, conversation, over_budget
 from .state import MotionGate
-from .metrics import record
+from .metrics import record, spent_today
 from .models import model_info
 from importlib.metadata import version
 
@@ -44,9 +44,10 @@ async def restart_audio_stack():
         await process.wait()
 
 
-def update_status(state):
-    heartbeat(state=state)
-    log.info("voice state=%s", state)
+def update_status(state, detail=""):
+    # detail is our own Portuguese explanation for the dashboard; never a raw server message.
+    heartbeat(state=state, detail=detail)
+    log.info("voice state=%s%s", state, f" detail={detail}" if detail else "")
 
 
 async def run(config, simulate=False):
@@ -66,6 +67,8 @@ async def run(config, simulate=False):
     next_sensor_retry = 0
     next_heartbeat = next_audio_check = next_aec_restart = 0
     audio_ready = False
+    audio_missing = []
+    aec_backoff = 120
     if simulate:
         trigger.touch()
     update_status("aquecendo_sensor")
@@ -73,10 +76,11 @@ async def run(config, simulate=False):
     async def session_attempts():
         key = os.environ.get("OPENAI_API_KEY", "").strip()
         if not key:
-            update_status("chave_ausente: configure /etc/noha/secrets.env")
+            update_status("chave_ausente", "Informe a chave OpenAI em Configurações")
             return
         nonlocal current_audio
         greet = True
+        failure = None
         for attempt, delay in enumerate((1, 2, 4, 8, 16)):
             audio = current_audio = AudioIO(config.audio)
             try:
@@ -92,28 +96,31 @@ async def run(config, simulate=False):
                 await adapter(config.voice, key, instructions, audio, greet=greet, state_callback=connected)
                 update_status("aguardando_movimento")
                 return
-            except APIProblem as exc:
-                record(config.voice.model, errors=1)
-                # APIProblem contains only a sanitized code, never a raw server message.
-                log.error("OpenAI code=%s", exc)
-                update_status("erro_api: confira chave, saldo e acesso ao modelo")
+            except AudioUnavailable as exc:
+                log.error("Áudio ausente: %s", exc)
+                update_status("audio_indisponivel", f"Não encontrado: {exc}. Confira cabos, tela e a seleção em Configurações")
                 return
             except Exception as exc:
                 record(config.voice.model, errors=1)
-                log.warning("Sessão interrompida type=%s tentativa=%s", type(exc).__name__, attempt + 1)
-                update_status("recuperando_audio_ou_conexao")
-                # HTTP 401/403/429 from the WebSocket handshake are not network loss.
+                # HTTP 401/403/429 from the WebSocket handshake and error close frames are not network loss.
                 status = getattr(getattr(exc, "response", None), "status_code", None)
-                if status in (400, 401, 403, 404, 429):
-                    update_status(f"erro_api_http_{status}")
+                problem = exc if isinstance(exc, APIProblem) else close_problem(exc)
+                if problem or status in (400, 401, 403, 404, 429):
+                    code = str(problem) if problem else f"http_{status}"
+                    # APIProblem contains only a sanitized code, never a raw server message.
+                    log.error("OpenAI code=%s", code)
+                    update_status("erro_api", api_message(code))
                     return
+                failure = type(exc).__name__
+                log.warning("Sessão interrompida type=%s tentativa=%s", failure, attempt + 1)
+                update_status("recuperando_audio_ou_conexao")
             finally:
                 audio.close()
                 current_audio = None
             if attempt < 4:
                 record(config.voice.model, reconnects=1)
                 await asyncio.sleep(delay)
-        update_status("indisponivel: execute noha doctor")
+        update_status("sem_conexao", f"A conversa caiu 5 vezes seguidas ({failure}); confira a internet do robô")
 
     async def session():
         started = time.monotonic()
@@ -149,19 +156,37 @@ async def run(config, simulate=False):
                 if manual:
                     gate.armed = False
                     gate.last_greeting = now
-                heartbeat(busy=True)
-                active = asyncio.create_task(session())
+                if over_budget(config.voice):
+                    log.warning("Conversa não iniciada: limite diário de custo atingido")
+                    update_status("orcamento_esgotado", f"Limite diário de US$ {config.voice.daily_budget_usd:.2f} atingido; "
+                                  "Noha volta à meia-noite ou aumente o limite em Configurações")
+                else:
+                    heartbeat(busy=True)
+                    active = asyncio.create_task(session())
             if now >= next_audio_check:
                 from .audio import devices
                 try:
                     names = {d["name"] for d in await asyncio.to_thread(devices)}
-                    audio_ready = all(n and n in names for n in config.audio.required())
-                    if active is None and now >= next_aec_restart and echo_cancel_dropped(config.audio, names):
-                        log.warning("AEC PipeWire ausente com microfone e alto-falante presentes; reiniciando PipeWire")
-                        next_aec_restart = now + 120
-                        await restart_audio_stack()
+                    audio_missing = missing(config.audio, names)
+                    audio_ready = not audio_missing
+                    if audio_ready:
+                        aec_backoff = 120
+                        if _status.get("state") == "audio_indisponivel":
+                            update_status("aguardando_movimento")
+                    elif active is None and now >= next_aec_restart:
+                        reason = ("AEC PipeWire ausente com microfone e alto-falante presentes"
+                                  if echo_cancel_dropped(config.audio, names) else
+                                  "placa de áudio sem perfil (tela HDMI desligada no boot?)"
+                                  if profile_missing(config.audio, names) else None)
+                        if reason:
+                            log.warning("%s; reiniciando PipeWire", reason)
+                            # A display may stay off for hours: back off instead of restarting every 2 min.
+                            next_aec_restart, aec_backoff = now + aec_backoff, min(aec_backoff * 2, 1800)
+                            await restart_audio_stack()
                 except Exception:
-                    audio_ready = False
+                    audio_ready, audio_missing = False, []
+                heartbeat(spent_today=round(await asyncio.to_thread(spent_today), 4),
+                          daily_budget=config.voice.daily_budget_usd)
                 next_audio_check = now + 10
             ring.show(pattern_for(_status.get("state", ""), warming=now - gate.boot < gate.warmup,
                                   speaking=bool(current_audio and current_audio.busy()),
@@ -170,7 +195,7 @@ async def run(config, simulate=False):
                 ready = bool(sensor and audio_ready and os.environ.get("OPENAI_API_KEY", "").strip()
                              and Path(config.voice.instructions).is_file())
                 heartbeat(busy=active is not None, ready=ready, updating=updating,
-                          audio_ready=audio_ready, gpio_ready=sensor is not None)
+                          audio_ready=audio_ready, audio_missing=audio_missing, gpio_ready=sensor is not None)
                 next_heartbeat = now + 2
             await asyncio.sleep(0.1)
     finally:

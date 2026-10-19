@@ -48,6 +48,10 @@ def doctor(config):
         checks += [("Fonte AEC PipeWire", config.audio.clean_source), ("Saída AEC PipeWire", config.audio.reference_sink)]
     for label, name in checks:
         report(bool(name and name in names), f"{label}: {name or 'não configurado'}")
+    from .audio import profile_missing
+    if profile_missing(config.audio, names):
+        print("     Placa presente sem saída/entrada: tela HDMI desligada no boot? "
+              "Com a tela ligada: systemctl --user restart pipewire pipewire-pulse wireplumber")
     try:
         import gi
         gi.require_version("Gst", "1.0")

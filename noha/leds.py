@@ -32,7 +32,7 @@ def pattern_for(state, speaking=False, warming=False, updating=False):
         return "speaking" if speaking else "listening"
     if state in ("conectando", "recuperando_audio_ou_conexao"):
         return "connecting"
-    if state.startswith(("erro", "chave_ausente", "indisponivel", "gpio_indisponivel")):
+    if state.startswith(("erro", "chave_ausente", "indisponivel", "gpio_indisponivel", "audio_indisponivel", "sem_conexao", "orcamento_esgotado")):
         return "error"
     # The voice loop never leaves "aquecendo_sensor" by itself; trust the warmup clock.
     return "warming" if warming else "off"

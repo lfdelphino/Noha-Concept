@@ -16,12 +16,39 @@ def parse_nodes(dump):
             nodes.append({"name": props.get("node.name", ""),
                           "description": props.get("node.description", ""),
                           "class": props["media.class"]})
+        elif props.get("media.class") == "Audio/Device":
+            nodes.append({"name": props.get("device.name", ""),
+                          "description": props.get("device.description", ""), "class": "Audio/Device"})
     return nodes
 
 
 def devices():
     result = subprocess.run(["pw-dump"], check=True, capture_output=True, text=True, timeout=8)
     return parse_nodes(result.stdout)
+
+
+class AudioUnavailable(RuntimeError):
+    """A configured PipeWire node is absent; retrying within seconds will not bring it back."""
+
+
+ROLES = ("Microfone", "Alto-falante", "Microfone com cancelamento de eco", "Alto-falante com cancelamento de eco")
+
+
+def missing(config, names):
+    """Labels of absent required nodes. AEC nodes are only blamed once mic and speaker exist."""
+    absent = [role for role, name in zip(ROLES, config.required()) if not name or name not in names]
+    return [role for role in absent if role in ROLES[:2]] or absent
+
+
+def card_of(node):
+    # alsa_output.platform-107c701400.hdmi.hdmi-stereo -> alsa_card.platform-107c701400.hdmi
+    return "alsa_card." + node.partition(".")[2].rpartition(".")[0] if node.startswith("alsa_") else None
+
+
+def profile_missing(config, names):
+    # vc4 HDMI audio cannot be opened while the display sleeps; a card probed at boot with the display
+    # off keeps only its "off"/"pro-audio" profiles, even after the display wakes, until PipeWire restarts.
+    return any(n not in names and card_of(n) in names for n in (config.microphone, config.speaker) if n)
 
 
 def echo_cancel_dropped(config, names):
@@ -68,9 +95,9 @@ class AudioIO:
         from gi.repository import Gst
         Gst.init(None)
         self.Gst = Gst
-        names = {d["name"] for d in devices()}
-        if any(not n or n not in names for n in self.config.required()):
-            raise RuntimeError("Dispositivo USB ou cancelamento de eco ausente; execute noha doctor")
+        absent = missing(self.config, {d["name"] for d in devices()})
+        if absent:
+            raise AudioUnavailable(", ".join(absent))
         source, sink = self.config.endpoints()
         self.loop = asyncio.get_running_loop()
         # Set device properties separately: device identifiers never become pipeline syntax.
@@ -150,8 +177,9 @@ class AudioIO:
         now = self.running_ns() - self.config.playback_latency_ms * 1_000_000
         return sum(max(0, min(duration, now - start)) for start, duration in self.spans) // 1_000_000
 
-    def busy(self):
-        return self.last_end > 0 and self.running_ns() < self.last_end + self.config.playback_latency_ms * 1_000_000
+    def busy(self, tail_ms=0):
+        latency = (self.config.playback_latency_ms + tail_ms) * 1_000_000
+        return self.last_end > 0 and self.running_ns() < self.last_end + latency
 
     def flush(self):
         if self.playback:

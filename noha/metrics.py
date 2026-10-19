@@ -7,7 +7,24 @@ import sqlite3
 import time
 
 log = logging.getLogger(__name__)
-METRICS = ("conversations", "duration_seconds", "input_tokens", "output_tokens", "cached_tokens", "errors", "reconnects")
+METRICS = ("conversations", "duration_seconds", "input_tokens", "output_tokens", "cached_tokens", "errors", "reconnects",
+           "cost_usd")
+
+
+def midnight():
+    import datetime
+    return datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
+def spent_today(path=None):
+    """Estimated USD since local midnight; unreadable metrics count as nothing spent."""
+    path = path or database()
+    try:
+        with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=3)) as db:
+            row = db.execute("SELECT SUM(value) FROM activity WHERE kind = 'cost_usd' AND at >= ?", (midnight(),)).fetchone()
+        return row[0] or 0.0
+    except (OSError, sqlite3.Error):
+        return 0.0
 
 
 def database():
@@ -41,8 +58,7 @@ def summary(days=1, path=None):
     now = time.time()
     start = now - days * 86400
     if days == 1:
-        import datetime
-        start = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        start = midnight()
     with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=3)) as db:
         rows = db.execute("SELECT model, kind, SUM(value) FROM activity WHERE at >= ? GROUP BY model, kind", (start,)).fetchall()
     grouped = {}

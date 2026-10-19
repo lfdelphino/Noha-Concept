@@ -5,12 +5,17 @@ import tomllib
 
 @dataclass
 class Voice:
-    model: str = "gpt-realtime-1.5"
+    model: str = "gpt-realtime-2.1-mini"
     voice: str = "marin"
     instructions: str = "/etc/noha/personality.txt"
-    idle_seconds: float = 60
+    idle_seconds: float = 30  # since the last accepted visitor turn or Noha's last word
+    max_session_seconds: float = 180  # hard limit per visit, whatever the microphone hears
+    min_speech_ms: int = 700  # shorter detections are noise: no reply, and removed from the context
+    context_tokens: int = 4000  # conversation kept after the instructions; each reply re-bills it
+    daily_budget_usd: float = 2.0  # estimated; 0 disables the limit
+    noise_reduction: str = "far_field"  # far_field | near_field | off
     eagerness: str = "medium"
-    max_output_tokens: int = 512
+    max_output_tokens: int = 300
 
 
 @dataclass
@@ -44,6 +49,11 @@ class Audio:
 
     def required(self):
         return (self.microphone, self.speaker, *self.endpoints())
+
+    def barge_in(self):
+        # Only the XVF3800 cancels echo well enough to listen while speaking; with a software AEC
+        # (HDMI latency) Noha hears itself and answers its own voice, so the mic waits for it to finish.
+        return self.hardware_aec()
 
 
 def same_xvf3800(microphone, speaker):
@@ -98,6 +108,12 @@ class Config:
             raise ValueError("Voz incompatível com o modelo")
         if config.voice.eagerness not in {"low", "medium", "high", "auto"}:
             raise ValueError("Eagerness inválida")
+        if config.voice.noise_reduction not in {"far_field", "near_field", "off"}:
+            raise ValueError("noise_reduction: far_field, near_field ou off")
+        for key, low in (("min_speech_ms", 0), ("context_tokens", 500), ("max_output_tokens", 50), ("daily_budget_usd", 0)):
+            value = getattr(config.voice, key)
+            if type(value) not in (int, float) or value < low:
+                raise ValueError(f"{key} precisa ser um número a partir de {low}")
         for section in (config.voice, config.motion, config.network):
             for key, value in vars(section).items():
                 if key.endswith("_seconds") and (not isinstance(value, (float, int)) or value <= 0):

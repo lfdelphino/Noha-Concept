@@ -103,7 +103,8 @@ AUDIO_STACK = ("pipewire.service", "pipewire-pulse.service", "wireplumber.servic
 async def audio_devices():
     # PipeWire is per-user: list the voice account's graph, not root's.
     nodes = parse_nodes(await user_command("pw-dump", timeout=10))
-    return [n for n in nodes if DEVICE_NAME.fullmatch(n["name"]) and not n["name"].startswith("noha_")]
+    return [n for n in nodes if DEVICE_NAME.fullmatch(n["name"]) and not n["name"].startswith("noha_")
+            and n["class"] != "Audio/Device"]
 
 
 async def validate_audio(data):
@@ -150,7 +151,7 @@ def get_settings():
     pending = read_json(STATE / "config-pending.json")
     return {"model": config.voice.model, "voice": config.voice.voice, "gpio": config.motion.gpio,
             "microphone": config.audio.microphone, "speaker": config.audio.speaker,
-            "echo_cancel": config.audio.echo_cancel,
+            "echo_cancel": config.audio.echo_cancel, "daily_budget_usd": config.voice.daily_budget_usd,
             "instructions": Path(config.voice.instructions).read_text(encoding="utf-8"),
             "openai_key_configured": bool(secret_key()), "ngrok_token_configured": bool(ngrok.get("authtoken")),
             "ngrok_url": ngrok.get("url", ""), "local_url": f"http://{socket.gethostname()}.local",
@@ -280,7 +281,8 @@ class Admin:
         return {"entries": rows}
 
     async def save_settings(self, data):
-        if set(data) - {"model", "voice", "gpio", "instructions", "openai_key", "microphone", "speaker", "echo_cancel"}:
+        if set(data) - {"model", "voice", "gpio", "instructions", "openai_key", "microphone", "speaker", "echo_cancel",
+                         "daily_budget_usd"}:
             raise ValueError("Campo desconhecido")
         model = model_info(data.get("model"))
         if data.get("voice") not in model.voices:
@@ -291,6 +293,9 @@ class Admin:
         key = data.get("openai_key", "")
         if not isinstance(key, str) or (key and not re.fullmatch(r"[A-Za-z0-9_-]{10,512}", key)):
             raise ValueError("Formato da chave OpenAI inválido")
+        budget = data.get("daily_budget_usd", 0)
+        if type(budget) not in (int, float) or not 0 <= budget <= 1000:
+            raise ValueError("Limite diário deve ficar entre US$ 0 e 1000")
         await validate_gpio(data.get("gpio"))
         await validate_audio(data)
         with update_lock():
@@ -355,6 +360,7 @@ class Admin:
                 text = originals[str(config_path)]["text"]
                 for section, key, value in (("voice", "model", data["model"]), ("voice", "voice", data["voice"]),
                                             ("motion", "gpio", data["gpio"]),
+                                            ("voice", "daily_budget_usd", data.get("daily_budget_usd", cfg.voice.daily_budget_usd)),
                                             *(("audio", key, value) for key, value in audio.items())):
                     text = edit_toml(text, section, key, value)
                 atomic_write(config_path, text, mode=0o644, backup=True)

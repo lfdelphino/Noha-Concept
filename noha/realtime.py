@@ -8,7 +8,8 @@ import time
 from urllib.parse import urlencode
 
 from .state import ConversationState
-from .metrics import record
+from .metrics import record, spent_today
+from .models import response_cost
 
 log = logging.getLogger(__name__)
 
@@ -22,6 +23,31 @@ def safe_code(value):
     return value if re.fullmatch(r"[a-zA-Z0-9_.-]{1,80}", value) else "unknown"
 
 
+def close_problem(exc):
+    """The server may refuse a session by closing with an error code as the reason,
+    e.g. 1013 insufficient_quota.credit_balance_exhausted. Retrying cannot fix that."""
+    frame = getattr(exc, "rcvd", None)
+    code = safe_code(getattr(frame, "reason", None) or None)
+    return None if code == "unknown" else APIProblem(code)
+
+
+API_MESSAGES = {
+    "insufficient_quota": "Conta OpenAI sem créditos; adicione saldo em platform.openai.com",
+    "credit_balance_exhausted": "Conta OpenAI sem créditos; adicione saldo em platform.openai.com",
+    "invalid_api_key": "Chave OpenAI inválida; atualize-a em Configurações",
+    "rate_limit_exceeded": "Limite de uso da OpenAI atingido; tente de novo em alguns minutos",
+    "model_not_found": "Modelo indisponível para esta conta; escolha outro em Configurações",
+    "http_401": "Chave OpenAI inválida; atualize-a em Configurações",
+    "http_403": "Esta chave não tem acesso ao modelo; confira o projeto em platform.openai.com",
+    "http_404": "Modelo indisponível para esta conta; escolha outro em Configurações",
+    "http_429": "Conta OpenAI sem créditos ou limite atingido; confira platform.openai.com",
+}
+
+
+def api_message(code):
+    return API_MESSAGES.get(code.partition(".")[0], f"OpenAI recusou a sessão (código {code})")
+
+
 def record_usage(model, usage):
     values = {}
     for key in ("input_tokens", "output_tokens"):
@@ -32,7 +58,24 @@ def record_usage(model, usage):
     if type(cached) is int and cached >= 0:
         values["cached_tokens"] = cached
     if values:
-        record(model, **values)
+        record(model, **values, cost_usd=response_cost(model, usage))
+
+
+GREETING = "Um visitante acabou de ser detectado pelo sensor de movimento. Siga agora a seção INÍCIO DA VISITA."
+ECHO_TAIL_MS = 400  # room reverb after Noha's last sample; still Noha, not the visitor
+
+
+def over_budget(config):
+    return config.daily_budget_usd > 0 and spent_today() >= config.daily_budget_usd
+
+
+def session_limit(config, started, now):
+    """None while the visit may go on; otherwise why it must end (logged, never spoken)."""
+    if now - started >= config.max_session_seconds:
+        return "max_session_seconds"
+    if over_budget(config):
+        return "daily_budget_usd"
+    return None
 
 
 class Playback:
@@ -78,19 +121,28 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
     generating_id = None
     ready = asyncio.Event()
     greeting_sent = False
+    barge_in = audio.config.barge_in()
+    speech = {}  # item_id -> [audio_start_ms, audio_end_ms]
+    counts = {"replies": 0, "ignored": 0}
+    ending = None
     async with connect(url, additional_headers={"Authorization": f"Bearer {key}"},
                        open_timeout=20, close_timeout=3, ping_interval=20, ping_timeout=20,
                        max_size=4 * 1024 * 1024, max_queue=32) as ws:
         async def send(event):
             await ws.send(json.dumps(event))
 
+        # Every reply re-bills the whole kept conversation as input; cap it after the instructions.
         await send({"type": "session.update", "session": {
             "type": "realtime", "instructions": instructions, "output_modalities": ["audio"],
             "tools": [], "max_output_tokens": config.max_output_tokens,
+            "truncation": {"type": "retention_ratio", "retention_ratio": 0.7,
+                           "token_limits": {"post_instructions": config.context_tokens}},
             "audio": {
                 "input": {"format": {"type": "audio/pcm", "rate": 24000},
+                          "noise_reduction": None if config.noise_reduction == "off" else {"type": config.noise_reduction},
+                          # Replies are created here, after the turn proves to be speech, not noise.
                           "turn_detection": {"type": "semantic_vad", "eagerness": config.eagerness,
-                                             "create_response": True, "interrupt_response": True}},
+                                             "create_response": False, "interrupt_response": barge_in}},
                 "output": {"format": {"type": "audio/pcm", "rate": 24000}, "voice": config.voice}}}})
 
         async def receive():
@@ -104,19 +156,29 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
                     if greet and not greeting_sent:
                         greeting_sent = True
                         state.generating = True
-                        await send({"type": "response.create", "response": {"instructions":
-                            "Cumprimente brevemente em português brasileiro quem acabou de chegar. "
-                            "Apresente-se como Noha, anfitrião robótico com voz gerada por IA. "
-                            "Uma ou duas frases; não enumere ambientes ou parceiros."}})
+                        # Response instructions replace the session's: keep the personality and facts.
+                        await send({"type": "response.create", "response": {"instructions": f"{instructions}\n\n{GREETING}"}})
                 elif kind == "input_audio_buffer.speech_started":
                     state.speaking = True
-                    state.last_user = time.monotonic()
-                    truncate = playback.interrupt(generating_id)
-                    if truncate:
-                        await send(truncate)
+                    speech[event.get("item_id")] = [event.get("audio_start_ms", 0), None]
+                    if barge_in:
+                        truncate = playback.interrupt(generating_id)
+                        if truncate:
+                            await send(truncate)
                 elif kind == "input_audio_buffer.speech_stopped":
                     state.speaking = False
-                    state.last_user = time.monotonic()
+                    speech.setdefault(event.get("item_id"), [0, None])[1] = event.get("audio_end_ms")
+                elif kind == "input_audio_buffer.committed":
+                    start, end = speech.pop(event.get("item_id"), (0, None))
+                    if ending or (end is not None and end - start < config.min_speech_ms):
+                        # A cough, a door, a TV blip: answering it costs the whole context again.
+                        counts["ignored"] += 1
+                        await send({"type": "conversation.item.delete", "item_id": event["item_id"]})
+                    else:
+                        counts["replies"] += 1
+                        state.last_user = time.monotonic()
+                        state.generating = True
+                        await send({"type": "response.create"})
                 elif kind == "response.created":
                     generating_id = event["response"]["id"]
                     state.generating = True
@@ -138,7 +200,11 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
                         details = response.get("status_details") or {}
                         raise APIProblem(safe_code((details.get("error") or {}).get("code")))
                 elif kind == "error":
-                    raise APIProblem(safe_code(event.get("error", {}).get("code")))
+                    code = safe_code(event.get("error", {}).get("code"))
+                    if code in ("conversation_already_has_active_response", "item_delete_invalid_item_id"):
+                        log.info("OpenAI code=%s ignorado", code)  # turn raced a reply; harmless
+                        continue
+                    raise APIProblem(code)
             raise ConnectionError("Realtime desconectado")
 
         async def capture():
@@ -147,21 +213,32 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
             audio.start_capture()
             while True:
                 data = await audio.input.get()
+                if ending or (not barge_in and (state.generating or audio.busy(ECHO_TAIL_MS))):
+                    continue  # Noha's own voice must never become a visitor turn
                 await send({"type": "input_audio_buffer.append", "audio": base64.b64encode(data).decode("ascii")})
 
         async def watchdog():
+            nonlocal ending
             await asyncio.wait_for(ready.wait(), 30)
-            last_device_check = 0
+            last_check = ending_at = 0
             while True:
                 audio.check()
                 now = time.monotonic()
-                if now - last_device_check >= 5:
+                if now - last_check >= 5:
                     from .audio import devices
                     names = {d["name"] for d in await asyncio.to_thread(devices)}
                     if any(n not in names for n in audio.config.required()):
                         raise RuntimeError("USB ou AEC desconectado")
-                    last_device_check = now
-                if state.idle(now, config.idle_seconds, audio.busy()):
+                    if not ending:
+                        ending = session_limit(config, started, now)
+                        ending_at = now
+                    last_check = now
+                talking = state.generating or audio.busy()
+                if state.idle(now, config.idle_seconds, talking):
+                    return
+                # A limit lets Noha finish its sentence, but never waits on a stuck reply.
+                if ending and (not talking or now - ending_at > 20):
+                    log.warning("Conversa encerrada pelo limite %s", ending)
                     return
                 await asyncio.sleep(0.1)
 
@@ -175,5 +252,6 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             audio.flush()
-            log.info("session duration_seconds=%.1f", time.monotonic() - started)
+            log.info("session duration_seconds=%.1f replies=%d ignored=%d", time.monotonic() - started,
+                     counts["replies"], counts["ignored"])
 

@@ -174,6 +174,22 @@ class DataTests(unittest.TestCase):
             self.assertIsNone(live["input_tokens"])
             self.assertEqual(result["totals"]["cached_tokens"], 0)
 
+    def test_cost_estimate_and_spend_today(self):
+        from noha.models import response_cost
+        usage = {"input_tokens": 5000, "output_tokens": 100,
+                 "input_token_details": {"text_tokens": 1500, "audio_tokens": 3500, "cached_tokens": 4000,
+                                         "cached_tokens_details": {"text_tokens": 1500, "audio_tokens": 2500}},
+                 "output_token_details": {"text_tokens": 20, "audio_tokens": 80}}
+        self.assertAlmostEqual(response_cost("gpt-realtime-1.5", usage),
+                               (1500 * 0.4 + 2500 * 0.4 + 1000 * 32 + 20 * 16 + 80 * 64) / 1e6)
+        self.assertAlmostEqual(response_cost("gpt-realtime-2.1-mini", {"input_tokens": 1000, "output_tokens": 0}), 10 / 1000)
+        with TemporaryDirectory() as folder, patch.dict(os.environ, {"NOHA_METRICS_DB": str(Path(folder) / "usage.db")}):
+            self.assertEqual(metrics.spent_today(), 0)
+            metrics.record("gpt-realtime-1.5", cost_usd=0.75)
+            metrics.record("gpt-live-1", cost_usd=0.5)
+            self.assertAlmostEqual(metrics.spent_today(), 1.25)
+            self.assertAlmostEqual(metrics.summary(1)["totals"]["cost_usd"], 1.25)
+
     def test_model_adapters_use_their_own_protocol_and_usage(self):
         self.assertEqual(model_info("gpt-live-1").transport, "live")
         with self.assertRaises(ValueError):
@@ -194,7 +210,7 @@ class DataTests(unittest.TestCase):
         self.assertFalse(hasattr(playback, "transcript"))
         with patch("noha.realtime.record") as record:
             record_usage("gpt-realtime-1.5", {"input_tokens": 4, "output_tokens": 6})
-            record.assert_called_once_with("gpt-realtime-1.5", input_tokens=4, output_tokens=6)
+            record.assert_called_once_with("gpt-realtime-1.5", input_tokens=4, output_tokens=6, cost_usd=(4 * 32 + 6 * 64) / 1e6)
 
 
 if __name__ == "__main__":

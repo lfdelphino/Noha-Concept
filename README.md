@@ -1,6 +1,6 @@
 # Noha — anfitrião de voz para Raspberry Pi 5
 
-Aplicação sem câmera, com `gpt-realtime-1.5` por padrão, modelos de voz selecionáveis, microfone e alto-falante USB, sensor HC-SR501, painel de administração e configuração de Wi-Fi pelo celular. A personalidade e os fatos da Noha Concept foram extraídos de `robo.py`; o rascunho original permanece como referência.
+Aplicação sem câmera, com `gpt-realtime-2.1-mini` por padrão (o modelo Realtime mais barato), modelos de voz selecionáveis, microfone e alto-falante USB, sensor HC-SR501, painel de administração e configuração de Wi-Fi pelo celular. A personalidade e os fatos da Noha Concept foram extraídos de `robo.py`; o rascunho original permanece como referência.
 
 O Pi captura/reproduz áudio e detecta movimento; a conversa depende da internet e da API OpenAI. Não há modelo local, ferramentas externas ou etapa separada de transcrição. GPT-Live utiliza sua própria conexão de áudio, sem um modelo de backend adicional.
 
@@ -196,7 +196,9 @@ sudo journalctl -u noha-network -u noha-portal -f
 journalctl --user -u pipewire -u wireplumber -b
 ```
 
-`noha doctor` verifica a configuração, presença da chave sem exibi-la, dispositivos e nós AEC, plugins GStreamer e função do GPIO. Ele não comprova qualidade acústica nem acesso à API. Use `pinctrl get 3` para inspecionar o pino. O portal também funciona se a chave estiver ausente; a voz informa o problema nos logs.
+`noha doctor` verifica a configuração, presença da chave sem exibi-la, dispositivos e nós AEC, plugins GStreamer e função do GPIO. Ele não comprova qualidade acústica nem acesso à API: recusas da OpenAI (sem créditos, chave inválida, modelo sem acesso) aparecem no painel após a primeira tentativa de conversa (`noha trigger`). Use `pinctrl get 3` para inspecionar o pino. O portal também funciona se a chave estiver ausente; a voz informa o problema no painel e nos logs.
+
+Uma saída HDMI só existe no PipeWire se a tela estava ligada quando ele iniciou. Se a tela acordar depois, o serviço reinicia o PipeWire sozinho quando estiver ocioso.
 
 ## Atualizações automáticas
 

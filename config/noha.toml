@@ -1,11 +1,16 @@
 # Installed as /etc/noha/noha.toml. Secrets belong in /etc/noha/secrets.env.
 [voice]
-model = "gpt-realtime-1.5"
+model = "gpt-realtime-2.1-mini" # cheapest Realtime model; see models.py for prices
 voice = "marin"
 instructions = "/etc/noha/personality.txt"
-idle_seconds = 60
+idle_seconds = 30 # since the last accepted visitor turn or Noha's last word
+max_session_seconds = 180 # hard limit per visit, whatever the microphone hears
+min_speech_ms = 700 # shorter detections are noise: no reply, removed from the context
+context_tokens = 4000 # conversation kept after the instructions; every reply re-bills it as input
+daily_budget_usd = 2.0 # estimated from OpenAI prices; 0 disables
+noise_reduction = "far_field" # far_field | near_field | off
 eagerness = "medium"
-max_output_tokens = 512
+max_output_tokens = 300
 
 [motion]
 gpio = 3 # BCM numbering: physical pin 5

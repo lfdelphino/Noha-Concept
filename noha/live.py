@@ -2,14 +2,15 @@
 import asyncio
 import base64
 import json
+import logging
 import time
 from uuid import uuid4
 
-from .realtime import APIProblem, safe_code
+from .metrics import record
+from .models import model_info
+from .realtime import ECHO_TAIL_MS, GREETING, APIProblem, safe_code, session_limit
 
-GREETING = ("Cumprimente agora em português brasileiro quem acabou de chegar. "
-            "Apresente-se como Noha, anfitrião robótico com voz gerada por IA, em uma ou duas frases. "
-            "Depois pare e ouça o visitante.")
+log = logging.getLogger(__name__)
 
 
 def start_event(config, instructions, greet):
@@ -47,6 +48,8 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
         ready, closed = asyncio.Event(), asyncio.Event()
         playback = LivePlayback(audio)
         closing = False
+        started = time.monotonic()
+        barge_in = audio.config.barge_in()
 
         async def send(event):
             await ws.send(json.dumps(event))
@@ -86,6 +89,8 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
                 data = pending + await audio.input.get()
                 end = len(data) - len(data) % 2
                 pending = data[end:]
+                if not barge_in and audio.busy(ECHO_TAIL_MS):
+                    continue  # Noha's own voice must never become a visitor turn
                 if end and not closing:
                     await send({"type": "session.input_audio.append", "audio": base64.b64encode(data[:end]).decode("ascii")})
 
@@ -93,6 +98,7 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
             nonlocal closing
             await asyncio.wait_for(ready.wait(), 30)
             last_check = 0
+            limit = None
             while True:
                 audio.check()
                 now = time.monotonic()
@@ -101,8 +107,13 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
                     names = {d["name"] for d in await asyncio.to_thread(devices)}
                     if any(n not in names for n in audio.config.required()):
                         raise RuntimeError("USB ou AEC desconectado")
+                    limit = session_limit(config, started, now)
                     last_check = now
-                if now - playback.last_user >= config.idle_seconds and not audio.busy():
+                if audio.busy():
+                    playback.last_user = now  # idle counts from Noha's last word
+                if not audio.busy() and (now - playback.last_user >= config.idle_seconds or limit):
+                    if limit:
+                        log.warning("Conversa encerrada pelo limite %s", limit)
                     closing = True
                     await send({"type": "session.close"})
                     await asyncio.wait_for(closed.wait(), 15)
@@ -119,3 +130,5 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             audio.flush()
+            # GPT-Live is billed per second of open session, not per token.
+            record(config.model, cost_usd=(time.monotonic() - started) / 60 * model_info(config.model).price.per_minute)
