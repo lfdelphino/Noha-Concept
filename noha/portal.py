@@ -10,6 +10,7 @@ CONTROLLER = web.AppKey("controller", ClientSession)
 def make_app(config):
     token = secrets.token_urlsafe(32)
     page = files("noha").joinpath("portal.html").read_text(encoding="utf-8").replace("__TOKEN__", token)
+    logo = files("noha").joinpath("logo.png").read_bytes()
     app = web.Application(client_max_size=4096)
 
     async def resources(app):
@@ -46,10 +47,14 @@ def make_app(config):
         except (ClientError, OSError, TimeoutError):
             return web.json_response({"error": "Serviço iniciando. Aguarde alguns segundos."}, status=503)
 
+    async def logo_png(request):
+        return web.Response(body=logo, content_type="image/png", headers={"Cache-Control": "max-age=3600"})
+
     async def captive(request):
         raise web.HTTPFound(f"http://{config.gateway}/")
 
     app.router.add_get("/", index)
+    app.router.add_get("/logo.png", logo_png)
     app.router.add_route("*", "/api/{operation}", api)
     # Android /generate_204, Apple /hotspot-detect.html, Windows /connecttest.txt,
     # and unknown HTTP URLs all lead to the same fully local page.

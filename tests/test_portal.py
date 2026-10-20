@@ -24,6 +24,8 @@ class PortalTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Conectar Noha", html)
             self.assertNotIn("__TOKEN__", html)
             self.assertNotIn("OPENAI_API_KEY", html)
+            logo = await client.get("/logo.png", allow_redirects=False)  # the only asset on the hotspot
+            self.assertEqual((logo.status, logo.content_type), (200, "image/png"))
             denied = await client.post("/api/connect", json={"ssid": "Home", "password": "secret123"})
             self.assertEqual(denied.status, 403)
 

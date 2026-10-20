@@ -2,6 +2,7 @@
 import asyncio
 from collections import deque
 import json
+import re
 import subprocess
 
 RATE = 24000
@@ -13,13 +14,21 @@ def parse_nodes(dump):
     for entry in json.loads(dump):
         props = entry.get("info", {}).get("props", {})
         if props.get("media.class") in {"Audio/Source", "Audio/Sink"}:
-            nodes.append({"name": props.get("node.name", ""),
+            nodes.append({"id": entry.get("id"), "name": props.get("node.name", ""),
                           "description": props.get("node.description", ""),
                           "class": props["media.class"]})
         elif props.get("media.class") == "Audio/Device":
-            nodes.append({"name": props.get("device.name", ""),
+            nodes.append({"id": entry.get("id"), "name": props.get("device.name", ""),
                           "description": props.get("device.description", ""), "class": "Audio/Device"})
     return nodes
+
+
+def parse_volume(output):
+    """wpctl get-volume: "Volume: 0.40" or "Volume: 0.40 [MUTED]" -> (percent, muted)."""
+    match = re.search(r"Volume:\s*([0-9]+(?:\.[0-9]+)?)(\s*\[MUTED\])?", output)
+    if not match:
+        raise ValueError("Volume indisponível")
+    return round(float(match.group(1)) * 100), bool(match.group(2))
 
 
 def devices():

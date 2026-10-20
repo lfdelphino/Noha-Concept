@@ -2,6 +2,7 @@
 import asyncio
 import contextlib
 import datetime
+import functools
 import json
 import os
 from pathlib import Path
@@ -10,14 +11,15 @@ import secrets
 import shutil
 import socket
 import time
-import tomllib
 
 from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 
-from .audio import ECHO_CONFIG, echo_cancel_config, parse_nodes
+from . import settings
+from .audio import ECHO_CONFIG, echo_cancel_config, parse_nodes, parse_volume
 from .config import Config, presence_enabled
+from .diagnostics import checks
 from .metrics import summary
-from .models import GPIO_PINS, catalog, model_info
+from .models import GPIO_PINS, catalog
 from .network import split_nm
 from .passwords import password_record, verify_password
 
@@ -26,6 +28,9 @@ STATE = Path("/var/lib/noha")
 SOCKET = "/run/noha-admin/control.sock"
 SERVICES = {"voice": "noha.service", "network": "noha-network.service", "web": "noha-portal.service",
             "admin": "noha-admin.service", "ngrok": "noha-ngrok.service", "updates": "noha-update.service"}
+AUDIO_STACK = ("pipewire.service", "pipewire-pulse.service", "wireplumber.service")
+AUDIO_KEYS = ("audio.microphone", "audio.speaker", "audio.echo_cancel")
+DEFAULT_PASSWORD = "admin"
 
 
 def read_json(path, default=None):
@@ -64,7 +69,7 @@ def update_lock():
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise ValueError("Atualização ou configuração em andamento. Tente novamente em breve.")
+            raise ValueError("Atualização ou configuração em andamento. Tente novamente em alguns segundos.")
         yield
 
 
@@ -72,13 +77,14 @@ async def command(*args, timeout=15, check=True, env=None):
     process = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE,
                                                  stderr=asyncio.subprocess.DEVNULL, env=env)
     try:
-        output, _ = await asyncio.wait_for(process.communicate(), timeout)
+        async with asyncio.timeout(timeout):
+            output, _ = await process.communicate()
     except (TimeoutError, asyncio.CancelledError):
         process.kill()
         await process.wait()
         raise
     if check and process.returncode:
-        raise ValueError("Operação do sistema falhou. Consulte o estado do serviço.")
+        raise ValueError("Operação do sistema falhou. Consulte os eventos do serviço.")
     return output.decode("utf-8", errors="replace").strip()
 
 
@@ -98,28 +104,14 @@ async def user_systemctl(*args, check=True):
     return await user_command("systemctl", "--user", *args, check=check)
 
 
-DEVICE_NAME = re.compile(r"[A-Za-z0-9_.:+-]{1,200}")
-AUDIO_STACK = ("pipewire.service", "pipewire-pulse.service", "wireplumber.service")
+async def audio_nodes():
+    # PipeWire is per-user: list the voice account's graph, not root's.
+    return parse_nodes(await user_command("pw-dump", timeout=10))
 
 
 async def audio_devices():
-    # PipeWire is per-user: list the voice account's graph, not root's.
-    nodes = parse_nodes(await user_command("pw-dump", timeout=10))
-    return [n for n in nodes if DEVICE_NAME.fullmatch(n["name"]) and not n["name"].startswith("noha_")
-            and n["class"] != "Audio/Device"]
-
-
-async def validate_audio(data):
-    audio = Config.load(ETC / "noha.toml").audio
-    if data.get("echo_cancel", audio.echo_cancel) not in {"auto", "pipewire", "xvf3800"}:
-        raise ValueError("Modo de cancelamento de eco inválido")
-    changed = [(key, kind) for key, kind in (("microphone", "Audio/Source"), ("speaker", "Audio/Sink"))
-               if data.get(key, getattr(audio, key)) != getattr(audio, key)]
-    if changed:
-        available = {(n["name"], n["class"]) for n in await audio_devices()}
-        for key, kind in changed:
-            if not isinstance(data[key], str) or (data[key], kind) not in available:
-                raise ValueError("Dispositivo de áudio indisponível; conecte-o e atualize a página")
+    return [n for n in await audio_nodes() if settings.DEVICE_NAME.fullmatch(n["name"])
+            and not n["name"].startswith("noha_") and n["class"] != "Audio/Device"]
 
 
 def echo_path():
@@ -137,29 +129,14 @@ def write_user_file(path, text):
     os.chown(path, user.pw_uid, user.pw_gid)
 
 
-def voice_status():
-    status = read_json(voice_runtime() / "status.json")
-    status["stale"] = time.time() - status.get("updated", 0) > 15
-    return status
-
-
 def voice_runtime():
     return Path(f"/run/user/{account().pw_uid}/noha")
 
 
-def get_settings():
-    config = Config.load(ETC / "noha.toml")
-    ngrok = read_json(ETC / "ngrok.json")
-    pending = read_json(STATE / "config-pending.json")
-    return {"model": config.voice.model, "voice": config.voice.voice, "gpio": config.motion.gpio,
-            "microphone": config.audio.microphone, "speaker": config.audio.speaker,
-            "echo_cancel": config.audio.echo_cancel, "daily_budget_usd": config.voice.daily_budget_usd,
-            "instructions": Path(config.voice.instructions).read_text(encoding="utf-8"),
-            "openai_key_configured": bool(secret_key()), "ngrok_token_configured": bool(ngrok.get("authtoken")),
-            "ngrok_url": ngrok.get("url", ""), "local_url": f"http://{socket.gethostname()}.local",
-            "models": catalog(), "gpio_pins": GPIO_PINS,
-            "pending": {k: v for k, v in pending.items() if k != "openai_key"},
-            "apply": read_json(STATE / "config-result.json")}
+def voice_status():
+    status = read_json(voice_runtime() / "status.json")
+    status["stale"] = time.time() - status.get("updated", 0) > 15
+    return status
 
 
 def secret_key():
@@ -170,15 +147,16 @@ def secret_key():
     return ""
 
 
-def edit_toml(text, section, key, value):
-    replacement = f"{key} = {json.dumps(value, ensure_ascii=False)}"
-    pattern = rf"(?ms)(^\[{re.escape(section)}\]\s*\n)(.*?)(?=^\[|\Z)"
-    def replace(match):
-        body = match.group(2)
-        line = rf"(?m)^{re.escape(key)}\s*=.*$"
-        body = re.sub(line, lambda _: replacement, body) if re.search(line, body) else body + replacement + "\n"
-        return match.group(1) + body
-    return re.sub(pattern, replace, text)
+_default_password = {}
+
+
+def default_password(record):
+    """Whether the dashboard still uses the installer's password; cached per password revision."""
+    revision = record.get("revision")
+    if revision not in _default_password:
+        _default_password.clear()
+        _default_password[revision] = bool(record) and verify_password(DEFAULT_PASSWORD, record)
+    return _default_password[revision]
 
 
 def ngrok_config(token, url):
@@ -189,14 +167,11 @@ def ngrok_config(token, url):
                                       "upstream": {"url": "http://127.0.0.1:80"}}]})
 
 
-async def validate_gpio(pin):
-    if type(pin) is not int or pin not in GPIO_PINS:
-        raise ValueError("GPIO BCM inválido")
-    config = Config.load(ETC / "noha.toml")
+async def validate_gpio(pin, current):
     output = await command("pinctrl", "get", str(pin))
     if re.search(r"\b(SCL\d*|SDA\d*|TXD\d*|RXD\d*|SPI\w*|PWM\w*|GPCLK\w*)\b", output):
         raise ValueError("GPIO ocupado por uma função de hardware; escolha outro pino")
-    if pin != config.motion.gpio:
+    if pin != current:
         # Probe as the voice user; a busy line fails without changing boot overlays.
         user = account()
         try:
@@ -204,6 +179,14 @@ async def validate_gpio(pin):
                           "from noha.motion import open_sensor; import sys; s=open_sensor(int(sys.argv[1])); s.close()", str(pin))
         except ValueError:
             raise ValueError(f"Não foi possível abrir o GPIO BCM{pin}; confira se outro programa usa o pino") from None
+
+
+def redact(message):
+    for value in (secret_key(), read_json(ETC / "ngrok.json").get("authtoken", "")):
+        if value:
+            message = message.replace(value, "[oculto]")
+    message = re.sub(r"(?i)(bearer\s+|(?:api[_-]?key|authtoken|password|senha)\s*[:=]\s*)[^\s,;]+", r"\1[oculto]", message)
+    return re.sub(r"\bsk-[A-Za-z0-9_-]+", "[oculto]", message)
 
 
 def set_presence(enabled):
@@ -215,21 +198,57 @@ def set_presence(enabled):
             "message": "Saudações por movimento ligadas" if enabled else "Saudações por movimento desligadas"}
 
 
-def redact(message):
-    for value in (secret_key(), read_json(ETC / "ngrok.json").get("authtoken", "")):
-        if value:
-            message = message.replace(value, "[oculto]")
-    message = re.sub(r"(?i)(bearer\s+|(?:api[_-]?key|authtoken|password|senha)\s*[:=]\s*)[^\s,;]+", r"\1[oculto]", message)
-    return re.sub(r"\bsk-[A-Za-z0-9_-]+", "[oculto]", message)
+def pending_view(pending):
+    """Pending changes for the browser: secrets become a flag."""
+    return {key: (True if key == "openai_key" else value) for key, value in pending.items()}
 
 
 class Admin:
     def __init__(self):
         self.cpu = None
+        self.routes = {
+            ("GET", "auth"): self.auth, ("POST", "login"): self.login, ("POST", "kiosk"): self.kiosk,
+            ("POST", "password"): self.password, ("GET", "status"): self.status,
+            ("GET", "settings"): self.get_settings, ("POST", "settings"): self.save_settings,
+            ("POST", "discard"): self.discard_pending, ("POST", "presence"): self.presence,
+            ("POST", "trigger"): self.trigger, ("GET", "volume"): self.volume, ("POST", "volume"): self.set_volume,
+            ("GET", "usage"): self.usage, ("GET", "logs"): self.logs, ("POST", "ngrok"): self.save_ngrok,
+            ("POST", "check-update"): functools.partial(self.update, install=False),
+            ("POST", "install-update"): functools.partial(self.update, install=True),
+        }
 
-    async def status(self):
-        config = Config.load(ETC / "noha.toml")
-        network = {"mode": "indisponivel"}
+    # Authentication ----------------------------------------------------------------------------
+
+    async def auth(self, data):
+        record = read_json(ETC / "dashboard-password.json")
+        return {"revision": record.get("revision"), "default": await asyncio.to_thread(default_password, record)}
+
+    async def login(self, data):
+        record = read_json(ETC / "dashboard-password.json")
+        if not await asyncio.to_thread(verify_password, data.get("password"), record):
+            raise PermissionError("Senha inválida")
+        return {"revision": record["revision"], "default": await asyncio.to_thread(default_password, record)}
+
+    async def kiosk(self, data):
+        # The local display's credential (scripts/kiosk.py); separate from the password.
+        path = ETC / "kiosk-token"
+        expected = path.read_text(encoding="utf-8").strip() if path.exists() else ""
+        if not expected or not secrets.compare_digest(str(data.get("token", "")), expected):
+            raise PermissionError("Token inválido")
+        return {"revision": read_json(ETC / "dashboard-password.json").get("revision")}
+
+    async def password(self, data):
+        if not await asyncio.to_thread(verify_password, data.get("current"), read_json(ETC / "dashboard-password.json")):
+            raise PermissionError("Senha atual inválida")
+        new = data.get("password")
+        if not isinstance(new, str) or len(new) < 6 or new == DEFAULT_PASSWORD:
+            raise ValueError("Use uma senha com pelo menos 6 caracteres, diferente da senha padrão")
+        atomic_write(ETC / "dashboard-password.json", await asyncio.to_thread(password_record, new), backup=True)
+        return {"accepted": True, "message": "Senha alterada. Entre de novo com a nova senha."}
+
+    # Status ------------------------------------------------------------------------------------
+
+    async def network(self, config):
         try:
             async with ClientSession(connector=UnixConnector(path=config.network.socket),
                                      timeout=ClientTimeout(total=2)) as client:
@@ -246,6 +265,9 @@ class Admin:
                                     if len(fields) == 2 and fields[0] == "yes"), "")
         except Exception:
             network["wifi"] = ""
+        return network
+
+    async def tunnel(self):
         ngrok = read_json(ETC / "ngrok.json")
         tunnel = {"url": ngrok.get("url", ""), "state": "configuracao_necessaria"}
         if ngrok.get("authtoken") and ngrok.get("url"):
@@ -254,9 +276,13 @@ class Admin:
                 async with ClientSession(timeout=ClientTimeout(total=1)) as client:
                     async with client.get("http://127.0.0.1:4040/api/tunnels") as response:
                         data = await response.json()
-                        tunnel["state"] = "online" if any(t.get("public_url") == ngrok["url"] for t in data.get("tunnels", [])) else "reconectando"
+                        if any(t.get("public_url") == ngrok["url"] for t in data.get("tunnels", [])):
+                            tunnel["state"] = "online"
             except Exception:
                 pass
+        return tunnel
+
+    def system(self):
         counts = [int(v) for v in Path("/proc/stat").read_text().splitlines()[0].split()[1:]]
         sample = (sum(counts[:8]), counts[3] + counts[4])
         cpu = None
@@ -267,17 +293,31 @@ class Admin:
                   (line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())}
         disk = shutil.disk_usage("/var/lib")
         temperature = Path("/sys/class/thermal/thermal_zone0/temp")
+        return {"cpu_percent": cpu, "uptime_seconds": float(Path("/proc/uptime").read_text().split()[0]),
+                "temperature": float(temperature.read_text()) / 1000 if temperature.exists() else None,
+                "memory_total": memory["MemTotal"], "memory_used": memory["MemTotal"] - memory["MemAvailable"],
+                "disk_total": disk.total, "disk_used": disk.used, "hostname": socket.gethostname()}
+
+    async def status(self, data=None):
+        config = Config.load(ETC / "noha.toml")
+        network, tunnel = await asyncio.gather(self.network(config), self.tunnel())
+        today = await asyncio.to_thread(summary, 1)
+        record = read_json(ETC / "dashboard-password.json")
         pending = read_json(STATE / "config-pending.json")
-        return {"voice": voice_status(), "network": network, "model": config.voice.model,
-                "system": {"cpu_percent": cpu, "uptime_seconds": float(Path("/proc/uptime").read_text().split()[0]),
-                           "temperature": float(temperature.read_text()) / 1000 if temperature.exists() else None,
-                           "memory_total": memory["MemTotal"], "memory_used": memory["MemTotal"] - memory["MemAvailable"],
-                           "disk_total": disk.total, "disk_used": disk.used},
-                "ngrok": tunnel, "local_url": f"http://{socket.gethostname()}.local",
-                "pending": bool(pending), "apply": read_json(STATE / "config-result.json"),
-                "updates": read_json(STATE / "update-status.json"),
-                "presence": presence_enabled(ETC / "presence.json"),
-                "auth_revision": read_json(ETC / "dashboard-password.json").get("revision")}
+        result = {"voice": voice_status(), "network": network, "model": config.voice.model, "voice_name": config.voice.voice,
+                  "system": self.system(), "ngrok": tunnel, "local_url": f"http://{socket.gethostname()}.local",
+                  "pending": bool(pending), "pending_keys": sorted(pending), "apply": read_json(STATE / "config-result.json"),
+                  "updates": read_json(STATE / "update-status.json"), "presence": presence_enabled(ETC / "presence.json"),
+                  "key_configured": bool(secret_key()),
+                  "budget": {"limit": config.voice.daily_budget_usd, "spent": today["totals"]["cost_usd"]},
+                  "today": {"visits": today["totals"]["visits"], "conversations": today["outcomes"]["conversou"],
+                            "greetings": today["totals"]["greetings"], "cost_usd": today["totals"]["cost_usd"],
+                            "duration_seconds": today["totals"]["duration_seconds"],
+                            "hourly": [bar["visits"] for bar in today["series"]]},
+                  "security": {"default_password": await asyncio.to_thread(default_password, record)},
+                  "auth_revision": record.get("revision")}
+        result["checks"] = checks(result)
+        return result
 
     async def logs(self, data):
         service = data.get("service", "voice")
@@ -295,59 +335,97 @@ class Admin:
             try:
                 entry = json.loads(line)
                 rows.append({"id": entry.get("__CURSOR"), "at": entry.get("__REALTIME_TIMESTAMP"),
-                             "message": redact(str(entry.get("MESSAGE", "")))[:2000]})
+                             "priority": entry.get("PRIORITY"), "message": redact(str(entry.get("MESSAGE", "")))[:2000]})
             except ValueError:
                 continue
         return {"entries": rows}
 
-    async def save_settings(self, data):
-        if set(data) - {"model", "voice", "gpio", "instructions", "openai_key", "microphone", "speaker", "echo_cancel",
-                         "daily_budget_usd"}:
-            raise ValueError("Campo desconhecido")
-        model = model_info(data.get("model"))
-        if data.get("voice") not in model.voices:
-            raise ValueError("Voz incompatível com o modelo")
-        instructions = data.get("instructions")
-        if not isinstance(instructions, str) or not 1 <= len(instructions.encode()) <= 60000:
-            raise ValueError("Instruções devem ter de 1 a 60000 bytes")
-        key = data.get("openai_key", "")
-        if not isinstance(key, str) or (key and not re.fullmatch(r"[A-Za-z0-9_-]{10,512}", key)):
-            raise ValueError("Formato da chave OpenAI inválido")
-        budget = data.get("daily_budget_usd", 0)
-        if type(budget) not in (int, float) or not 0 <= budget <= 1000:
-            raise ValueError("Limite diário deve ficar entre US$ 0 e 1000")
-        await validate_gpio(data.get("gpio"))
-        await validate_audio(data)
-        with update_lock():
-            if (STATE / "config-pending.json").exists():
-                raise ValueError("Uma configuração já está aguardando aplicação")
-            atomic_write(STATE / "config-pending.json", data)
-            atomic_write(STATE / "config-result.json", {"state": "pending", "message": "Aguardando o fim da conversa"})
-        return {"accepted": True, "message": "Configuração salva. Será aplicada após a conversa atual."}
+    async def usage(self, data):
+        days = int(data.get("days", 1))
+        if days not in {1, 7, 30}:
+            raise ValueError("Período inválido")
+        return await asyncio.to_thread(summary, days)
 
-    async def save_ngrok(self, data):
-        if set(data) - {"authtoken", "url"}:
-            raise ValueError("Campo desconhecido")
-        old = read_json(ETC / "ngrok.json")
-        token = data.get("authtoken") or old.get("authtoken", "")
-        url = data.get("url", "").strip().rstrip("/")
-        if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{10,512}", token):
-            raise ValueError("Informe o authtoken do agente ngrok")
-        if not re.fullmatch(r"https://[a-zA-Z0-9](?:[a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?", url):
-            raise ValueError("Informe somente o hostname HTTPS atribuído à sua conta ngrok")
+    # Live controls -----------------------------------------------------------------------------
+
+    async def presence(self, data):
+        return set_presence(data.get("enabled"))
+
+    async def trigger(self, data):
+        status = voice_status()
+        if status["stale"]:
+            raise ValueError("O serviço de voz não está respondendo")
+        if status.get("busy"):
+            raise ValueError("Noha já está atendendo alguém")
+        (voice_runtime() / "trigger").touch(mode=0o644)
+        return {"accepted": True, "message": "Noha vai cumprimentar agora, como se alguém tivesse chegado."}
+
+    async def speaker_node(self):
+        name = Config.load(ETC / "noha.toml").audio.speaker
+        node = next((n for n in await audio_nodes() if n["name"] == name and n["class"] == "Audio/Sink"), None)
+        if node is None or node.get("id") is None:
+            raise ValueError("Alto-falante não encontrado")
+        return str(node["id"])
+
+    async def volume(self, data=None):
+        level, muted = parse_volume(await user_command("wpctl", "get-volume", await self.speaker_node(), timeout=5))
+        return {"level": level, "muted": muted}
+
+    async def set_volume(self, data):
+        level = data.get("level")
+        if type(level) is not int or not 0 <= level <= 100:
+            raise ValueError("Volume de 0 a 100")
+        node = await self.speaker_node()
+        await user_command("wpctl", "set-volume", node, f"{level / 100:.2f}", timeout=5)
+        await user_command("wpctl", "set-mute", node, "0", timeout=5)
+        return {"level": level, "muted": False}
+
+    # Settings ----------------------------------------------------------------------------------
+
+    async def get_settings(self, data=None):
+        config = Config.load(ETC / "noha.toml")
+        try:
+            devices = await audio_devices()
+        except Exception:
+            devices = []  # PipeWire down: the page still shows the saved names
+        ngrok = read_json(ETC / "ngrok.json")
+        return {"values": settings.values(config, Path(config.voice.instructions).read_text(encoding="utf-8")),
+                "schema": settings.schema(), "models": catalog(), "gpio_pins": GPIO_PINS, "devices": devices,
+                "openai_key_configured": bool(secret_key()), "ngrok_url": ngrok.get("url", ""),
+                "ngrok_token_configured": bool(ngrok.get("authtoken")),
+                "local_url": f"http://{socket.gethostname()}.local",
+                "pending": pending_view(read_json(STATE / "config-pending.json")),
+                "apply": read_json(STATE / "config-result.json")}
+
+    async def save_settings(self, data):
+        config = Config.load(ETC / "noha.toml")
+        changes = settings.validate(data.get("changes"), config)
+        changed = [key for key in ("audio.microphone", "audio.speaker")
+                   if key in changes and changes[key] != getattr(config.audio, key.partition(".")[2])]
+        if changed:
+            available = {(n["name"], n["class"]) for n in await audio_devices()}
+            for key in changed:
+                if (changes[key], settings.BY_KEY[key].source) not in available:
+                    raise ValueError("Dispositivo de áudio indisponível; conecte-o e atualize a página")
+        if "motion.gpio" in changes:
+            await validate_gpio(changes["motion.gpio"], config.motion.gpio)
         with update_lock():
-            candidate = ETC / "ngrok-candidate.yml"
-            try:
-                atomic_write(candidate, ngrok_config(token, url), mode=0o600)
-                await command("ngrok", "config", "check", "--config", str(candidate))
-                atomic_write(ETC / "ngrok.json", {"authtoken": token, "url": url}, backup=True)
-                atomic_write(ETC / "ngrok.yml", candidate.read_text(), mode=0o640, backup=True)
-                import grp
-                os.chown(ETC / "ngrok.yml", 0, grp.getgrnam("noha-ngrok").gr_gid)
-                atomic_write(STATE / "ngrok-restart.json", {"at": time.time() + 3})
-            finally:
-                candidate.unlink(missing_ok=True)
-        return {"accepted": True, "url": url, "message": "ngrok será reconectado em 3 segundos. Abra o endereço salvo."}
+            pending = read_json(STATE / "config-pending.json")
+            pending.update(changes)
+            atomic_write(STATE / "config-pending.json", pending)
+            atomic_write(STATE / "config-result.json", {"state": "pending", "message": "Aguardando Noha ficar livre"})
+        return {"accepted": True, "pending": pending_view(pending),
+                "message": "Salvo. Noha aplica assim que estiver livre e reinicia a voz em alguns segundos."}
+
+    async def discard_pending(self, data=None):
+        with update_lock():
+            if (STATE / "config-transaction.json").exists():
+                raise ValueError("As alterações já estão sendo aplicadas")
+            (STATE / "config-pending.json").unlink(missing_ok=True)
+            atomic_write(STATE / "config-result.json", {"state": "discarded", "message": "Alterações descartadas"})
+        with contextlib.suppress(OSError, KeyError):
+            (voice_runtime() / "config-pending").unlink(missing_ok=True)
+        return {"accepted": True, "message": "Alterações pendentes descartadas"}
 
     async def apply_pending(self):
         data = read_json(STATE / "config-pending.json")
@@ -358,7 +436,7 @@ class Admin:
             marker = runtime / "config-pending"
             if not runtime.is_dir():
                 return
-            marker.touch(mode=0o644)
+            marker.touch(mode=0o644)  # the voice service starts no new visit meanwhile
             try:
                 await asyncio.sleep(0.3)
                 status = voice_status()
@@ -367,22 +445,18 @@ class Admin:
                 if status["stale"] and await user_systemctl("is-active", "noha.service", check=False) == "active":
                     return
                 config_path = ETC / "noha.toml"
-                cfg = Config.load(config_path)
-                instructions_path = Path(cfg.voice.instructions)
-                audio = {key: data.get(key, getattr(cfg.audio, key)) for key in ("microphone", "speaker", "echo_cancel")}
-                audio_changed = any(value != getattr(cfg.audio, key) for key, value in audio.items())
+                current = Config.load(config_path)
+                instructions_path = Path(current.voice.instructions)
+                toml_changes = {key: value for key, value in data.items() if key not in settings.SPECIAL}
+                audio_changed = any(key in toml_changes and toml_changes[key] != getattr(current.audio, key.partition(".")[2])
+                                    for key in AUDIO_KEYS)
                 echo = echo_path() if audio_changed else None
                 targets = [config_path, instructions_path, ETC / "secrets.env", *([echo] if echo else [])]
                 # A file that did not exist is recorded as None: recovery removes it again.
                 originals = {str(p): {"text": p.read_text(encoding="utf-8"), "mode": p.stat().st_mode & 0o777}
                              if p.exists() else {"text": None, "mode": 0o644} for p in targets}
                 atomic_write(STATE / "config-transaction.json", originals)
-                text = originals[str(config_path)]["text"]
-                for section, key, value in (("voice", "model", data["model"]), ("voice", "voice", data["voice"]),
-                                            ("motion", "gpio", data["gpio"]),
-                                            ("voice", "daily_budget_usd", data.get("daily_budget_usd", cfg.voice.daily_budget_usd)),
-                                            *(("audio", key, value) for key, value in audio.items())):
-                    text = edit_toml(text, section, key, value)
+                text = settings.apply(originals[str(config_path)]["text"], toml_changes)
                 atomic_write(config_path, text, mode=0o644, backup=True)
                 new = Config.load(config_path)
                 if echo:
@@ -391,27 +465,30 @@ class Admin:
                     else:
                         write_user_file(echo, echo_cancel_config(new.audio.microphone, new.audio.speaker))
                     await user_systemctl("restart", *AUDIO_STACK)
-                atomic_write(instructions_path, data["instructions"], mode=0o644, backup=True)
+                if "personality" in data:
+                    atomic_write(instructions_path, data["personality"], mode=0o644, backup=True)
                 if data.get("openai_key"):
-                    secrets_text = originals[str(ETC / "secrets.env")]["text"]
+                    secrets_text = originals[str(ETC / "secrets.env")]["text"] or ""
                     secrets_text = re.sub(r"(?m)^OPENAI_API_KEY=.*\n?", "", secrets_text)
-                    atomic_write(ETC / "secrets.env", secrets_text.rstrip() + "\nOPENAI_API_KEY=" + data["openai_key"] + "\n", mode=0o640, backup=True)
+                    atomic_write(ETC / "secrets.env", secrets_text.rstrip() + "\nOPENAI_API_KEY=" + data["openai_key"] + "\n",
+                                 mode=0o640, backup=True)
                 started = time.time()
                 await user_systemctl("reset-failed", "noha.service", check=False)
                 await user_systemctl("restart", "noha.service")
                 for _ in range(30):
                     state = voice_status()
-                    if (not state["stale"] and state.get("updated", 0) >= started and state.get("model") == data["model"]
-                            and state.get("gpio") == data["gpio"] and (state.get("audio_ready") or not audio_changed)):
+                    # The restarted service reports the digest of the file it loaded.
+                    if (not state["stale"] and state.get("updated", 0) >= started
+                            and state.get("config_digest") == new.digest and (state.get("audio_ready") or not audio_changed)):
                         break
                     await asyncio.sleep(1)
                 else:
                     raise ValueError("A nova configuração não iniciou; configuração anterior restaurada")
                 (STATE / "config-transaction.json").unlink()
                 (STATE / "config-pending.json").unlink()
-                atomic_write(STATE / "config-result.json", {"state": "applied", "message": "Configuração aplicada", "at": time.time()})
+                atomic_write(STATE / "config-result.json", {"state": "applied", "message": "Alterações aplicadas", "at": time.time()})
             finally:
-                # Keep the gate while waiting for an active session; remove it after success/failure.
+                # Keep the gate while waiting for an active visit; remove it after success/failure.
                 if not (STATE / "config-pending.json").exists():
                     marker.unlink(missing_ok=True)
 
@@ -427,6 +504,8 @@ class Admin:
                         path.unlink(missing_ok=True)
                     else:
                         write_user_file(path, original["text"])
+                elif original["text"] is None:
+                    path.unlink(missing_ok=True)
                 else:
                     atomic_write(path, original["text"], mode=original["mode"])
             if any(Path(path).name == Path(ECHO_CONFIG).name for path in transaction):
@@ -436,6 +515,37 @@ class Admin:
             (STATE / "config-pending.json").unlink(missing_ok=True)
             (voice_runtime() / "config-pending").unlink(missing_ok=True)
             atomic_write(STATE / "config-result.json", {"state": "error", "message": "Configuração anterior restaurada após falha"})
+
+    # Remote access and updates -----------------------------------------------------------------
+
+    async def save_ngrok(self, data):
+        old = read_json(ETC / "ngrok.json")
+        token = data.get("authtoken") or old.get("authtoken", "")
+        url = str(data.get("url", "")).strip().rstrip("/")
+        if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{10,512}", token):
+            raise ValueError("Informe o authtoken do agente ngrok")
+        if not re.fullmatch(r"https://[a-zA-Z0-9](?:[a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?", url):
+            raise ValueError("Informe somente o endereço HTTPS atribuído à sua conta ngrok")
+        with update_lock():
+            candidate = ETC / "ngrok-candidate.yml"
+            try:
+                atomic_write(candidate, ngrok_config(token, url), mode=0o600)
+                await command("ngrok", "config", "check", "--config", str(candidate))
+                atomic_write(ETC / "ngrok.json", {"authtoken": token, "url": url}, backup=True)
+                atomic_write(ETC / "ngrok.yml", candidate.read_text(), mode=0o640, backup=True)
+                import grp
+                os.chown(ETC / "ngrok.yml", 0, grp.getgrnam("noha-ngrok").gr_gid)
+                atomic_write(STATE / "ngrok-restart.json", {"at": time.time() + 3})
+            finally:
+                candidate.unlink(missing_ok=True)
+        return {"accepted": True, "url": url, "message": "Acesso pela internet reconectando em 3 segundos."}
+
+    async def update(self, data, install):
+        if (STATE / "config-pending.json").exists():
+            raise ValueError("Aguarde a aplicação das alterações pendentes")
+        service = "noha-update.service" if install else "noha-update-check.service"
+        await command("systemctl", "start", "--no-block", service)
+        return {"accepted": True, "message": "Instalação solicitada" if install else "Verificação solicitada"}
 
     async def worker(self):
         while True:
@@ -451,67 +561,22 @@ class Admin:
                 raise
             except Exception:
                 if (STATE / "config-transaction.json").exists():
-                    try:
+                    with contextlib.suppress(Exception):
                         await self.recover_config()
-                    except Exception:
-                        pass
             await asyncio.sleep(2)
 
     async def dispatch(self, request):
         operation = request.match_info["operation"]
+        handler = self.routes.get((request.method, operation))
+        if handler is None:
+            return web.json_response({"error": "Operação desconhecida"}, status=404)
         try:
             data = await request.json() if request.method == "POST" else dict(request.query)
             if not isinstance(data, dict):
                 raise ValueError("Dados inválidos")
-            if operation == "login" and request.method == "POST":
-                record = read_json(ETC / "dashboard-password.json")
-                if not await asyncio.to_thread(verify_password, data.get("password"), record):
-                    return web.json_response({"error": "Senha inválida"}, status=401)
-                result = {"revision": record["revision"]}
-            elif operation == "password" and request.method == "POST":
-                if not await asyncio.to_thread(verify_password, data.get("current"), read_json(ETC / "dashboard-password.json")):
-                    return web.json_response({"error": "Senha atual inválida"}, status=403)
-                atomic_write(ETC / "dashboard-password.json", await asyncio.to_thread(password_record, data.get("password")), backup=True)
-                result = {"accepted": True}
-            elif operation == "kiosk" and request.method == "POST":
-                # The local display's credential (scripts/kiosk.py); separate from the password.
-                path = ETC / "kiosk-token"
-                expected = path.read_text(encoding="utf-8").strip() if path.exists() else ""
-                if not expected or not secrets.compare_digest(str(data.get("token", "")), expected):
-                    return web.json_response({"error": "Token inválido"}, status=401)
-                result = {"revision": read_json(ETC / "dashboard-password.json").get("revision")}
-            elif operation == "auth" and request.method == "GET":
-                result = {"revision": read_json(ETC / "dashboard-password.json").get("revision")}
-            elif operation == "status" and request.method == "GET":
-                result = await self.status()
-            elif operation == "settings" and request.method == "GET":
-                result = get_settings()
-                try:
-                    result["audio_devices"] = await audio_devices()
-                except Exception:
-                    result["audio_devices"] = []  # PipeWire down: the page still shows the saved names
-            elif operation == "settings" and request.method == "POST":
-                result = await self.save_settings(data)
-            elif operation == "ngrok" and request.method == "POST":
-                result = await self.save_ngrok(data)
-            elif operation == "presence" and request.method == "POST":
-                result = set_presence(data.get("enabled"))
-            elif operation == "usage" and request.method == "GET":
-                days = int(data.get("days", 1))
-                if days not in {1, 7, 30}:
-                    raise ValueError("Período inválido")
-                result = await asyncio.to_thread(summary, days)
-            elif operation == "logs" and request.method == "GET":
-                result = await self.logs(data)
-            elif operation in {"check-update", "install-update"} and request.method == "POST":
-                if (STATE / "config-pending.json").exists():
-                    raise ValueError("Aguarde a aplicação da configuração")
-                service = "noha-update-check.service" if operation == "check-update" else "noha-update.service"
-                await command("systemctl", "start", "--no-block", service)
-                result = {"accepted": True, "message": "Operação de atualização solicitada"}
-            else:
-                raise web.HTTPNotFound()
-            return web.json_response(result)
+            return web.json_response(await handler(data))
+        except PermissionError as exc:
+            return web.json_response({"error": str(exc)}, status=401 if operation != "password" else 403)
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
         except (TypeError, KeyError):
@@ -524,6 +589,7 @@ async def serve():
     admin = Admin()
     app = web.Application(client_max_size=128 * 1024)
     app.router.add_route("*", "/{operation}", admin.dispatch)
+
     async def background(app):
         task = asyncio.create_task(admin.worker())
         yield

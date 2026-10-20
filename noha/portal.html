@@ -1,29 +1,47 @@
 <!doctype html>
-<html lang="pt-BR">
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="pt-BR" translate="no">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="google" content="notranslate">
 <title>Conectar Noha ao Wi-Fi</title>
 <style>
-:root{color-scheme:light;font:16px system-ui,sans-serif;color:#162533;background:#eff4f6}
-*{box-sizing:border-box}body{margin:0;padding:26px 16px}main{max-width:480px;margin:auto;background:white;border-radius:22px;padding:28px;box-shadow:0 8px 40px #15304012}
-.logo{font-size:13px;font-weight:800;letter-spacing:3px;color:#087b77}h1{font-size:28px;line-height:1.2;margin:14px 0}p{line-height:1.5;color:#52616a}
-label{display:block;font-weight:600;margin-top:20px}input,select,button{font:inherit;width:100%;padding:13px;border-radius:10px;border:1px solid #bdcbd2;margin-top:7px;background:white;color:inherit}input[type=checkbox]{width:auto}
-button{cursor:pointer;background:#087b77;color:white;border:0;font-weight:700;margin-top:22px}button.secondary{background:#edf5f4;color:#086762}button:disabled{opacity:.5;cursor:wait}
-#status{background:#eef6f5;border-radius:10px;padding:14px;white-space:pre-line}small{color:#607078;line-height:1.6}.error{color:#a12b35!important}a{color:#087b77}
+:root{color-scheme:light;--bg:#f2f3ee;--surface:#fff;--line:#cdd5c6;--ink:#132826;--muted:#697771;--brand:#132a28;--accent:#d7ef95;--olive:#557a2f;--error:#b2382b;font:16px/1.5 "Inter","Segoe UI",system-ui,-apple-system,Roboto,sans-serif;color:var(--ink);background:var(--bg)}
+*{box-sizing:border-box}body{margin:0}
+header{padding:28px 22px 30px;color:#f3f7ec;background:radial-gradient(130% 120% at 0% 0%,#2b5c55,#132a28 62%)}
+header img{display:block;height:34px;width:auto;filter:invert(1)}
+header p{margin:22px 0 0;font-size:11px;font-weight:700;letter-spacing:.14em;color:rgb(243 247 236/58%)}
+h1{margin:6px 0 0;font-size:26px;line-height:1.2;letter-spacing:-.02em}
+main{max-width:480px;margin:-14px auto 0;padding:0 16px 32px}
+.card{background:var(--surface);border:1px solid #e2e6dc;border-radius:20px;padding:22px;box-shadow:0 8px 24px rgb(19 40 38/8%)}
+.lead{margin:0 0 16px;color:var(--muted);font-size:15px}
+#status{margin:0;padding:12px 14px;border-radius:12px;background:#e1f0e4;color:#21593a;font-size:14px;white-space:pre-line}
+#status.error{background:#f9e3df;color:var(--error)}
+label{display:block;margin-top:18px;font-size:13px;font-weight:650;color:#3b4e49}
+input,select,button{font:inherit;width:100%;min-height:46px;margin-top:6px;padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:inherit;font-size:16px}
+input:focus,select:focus{outline:0;border-color:#6f8f3c;box-shadow:0 0 0 3px rgb(111 143 60/22%)}
+input[type=checkbox]{width:auto;min-height:0;margin:0 8px 0 0;accent-color:var(--olive)}
+.check{display:flex;align-items:center;font-weight:500;color:var(--ink)}
+button{cursor:pointer;border:0;background:var(--accent);color:var(--brand);font-weight:700;margin-top:22px}
+button.secondary{margin-top:10px;background:#ecefe6;color:var(--ink)}
+button:disabled{opacity:.5;cursor:wait}
+small{display:block;margin-top:6px;color:var(--muted);font-size:13px;line-height:1.5}
+.foot{margin-top:18px;color:var(--muted);font-size:13px}
+a{color:var(--olive);font-weight:650}
 </style>
-<main><div class="logo">NOHA CONCEPT</div><h1>Vamos conectar o Noha?</h1>
-<p>Escolha o Wi-Fi do ambiente. Depois de conectar, o robô estará pronto para conversar.</p>
+<header><img src="/logo.png" alt="Noha"><p>CONFIGURAÇÃO DE WI-FI</p><h1>Vamos conectar o Noha?</h1></header>
+<main><div class="card">
+<p class="lead">Escolha o Wi-Fi do local. Depois de conectar, o robô volta a conversar com os visitantes.</p>
 <p id="status" role="status" aria-live="polite">Carregando redes…</p>
 <form id="form">
 <label for="networks">Redes encontradas</label><select id="networks"><option value="">Digitar outra rede ou rede oculta</option></select>
 <button type="button" class="secondary" id="scan">Buscar redes novamente</button>
-<small>A busca pode desconectar este aparelho por alguns segundos.</small>
+<small>A busca pode desconectar este celular por alguns segundos.</small>
 <label for="ssid">Nome da rede (SSID)</label><input id="ssid" required autocomplete="off" maxlength="32">
-<label><input id="hidden" type="checkbox"> Esta rede é oculta</label>
+<label class="check"><input id="hidden" type="checkbox"> Esta rede é oculta</label>
 <label for="security">Segurança</label><select id="security"><option value="wpa-psk">WPA / WPA2 / WPA2-WPA3</option><option value="sae">Somente WPA3</option><option value="open">Rede sem senha</option></select>
 <label for="password" id="password-label">Senha do Wi-Fi</label><input id="password" type="password" autocomplete="new-password" maxlength="64">
-<label><input id="show-password" type="checkbox"> Mostrar senha</label>
+<label class="check"><input id="show-password" type="checkbox"> Mostrar senha</label>
 <button id="connect" type="submit">Conectar Noha</button></form>
-<p><small>Durante a conexão, a rede de configuração desaparece. Se ela voltar, conecte-se novamente para conferir o resultado.<br>Endereço desta página: <a href="http://192.168.50.1">192.168.50.1</a></small></p>
+</div>
+<p class="foot">Durante a conexão, esta rede de configuração desaparece. Se ela voltar, conecte-se de novo para ver o resultado.<br>Endereço desta página: <a href="http://192.168.50.1">192.168.50.1</a></p>
 </main>
 <script>
 const $=id=>document.getElementById(id);let networks=[],busy=false;
@@ -39,4 +57,3 @@ $('form').onsubmit=async e=>{e.preventDefault();lock(true);try{await api('connec
 $('scan').onclick=async()=>{lock(true);try{await api('scan',{});message('Buscando redes… Reconecte à rede Noha-Setup e reabra http://192.168.50.1.')}catch(e){lock(false);message(e.message,true)}};
 security();load();setInterval(status,5000);
 </script></html>
-

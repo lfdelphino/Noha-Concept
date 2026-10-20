@@ -76,6 +76,9 @@ async def prepare(config, key, texts, folder=None, session=None):
     return [(text, (folder / clip_name(config.greeting, config.voice.voice, text)).read_bytes()) for text in texts]
 
 
+OFFLINE_GREETING = "Olá, eu sou Noha! Estou sem internet agora. Fale comigo e eu explico como me conectar."
+
+
 def setup_text(network, ssid):
     """Wi-Fi setup steps spoken when a visitor talks while Noha is offline (see README, Wi-Fi pelo celular)."""
     name = ("Noha Setup " + " ".join(ssid.removeprefix("Noha-Setup-"))) if ssid.startswith("Noha-Setup-")         else ssid.replace("-", " ").replace("_", " ")
@@ -173,7 +176,8 @@ async def greet_and_listen(audio, pcm, listen_seconds, detector, clock=time.mono
     while True:
         audio.check()
         try:
-            data = await asyncio.wait_for(audio.input.get(), 0.2)  # draining keeps the queue from overflowing
+            async with asyncio.timeout(0.2):  # draining keeps the queue from overflowing
+                data = await audio.input.get()
         except TimeoutError:
             data = None
         now = clock()

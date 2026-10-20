@@ -1,4 +1,5 @@
-# Installed as /etc/noha/noha.toml. Secrets belong in /etc/noha/secrets.env.
+# Installed as /etc/noha/noha.toml and edited by the dashboard (Ajustes), which keeps these comments.
+# Secrets belong in /etc/noha/secrets.env. After editing by hand: systemctl --user restart noha
 [voice]
 model = "gpt-realtime-2.1-mini" # cheapest Realtime model; see models.py for prices
 voice = "alloy" # neutral, the least human-sounding voice; changeable in the dashboard
@@ -39,7 +40,7 @@ echo_cancel = "auto" # conservative estimate used for interrupted-history trunca
 [greeting]
 # Greetings are synthesized once (gpt-4o-mini-tts, same voice) and played locally: motion never
 # costs a Realtime reply. A session opens only when someone speaks after the greeting.
-local = true # false: the voice model generates every greeting, as before
+local = true # false: the voice model generates every greeting, each one billed
 speech_margin_db = 12 # local speech detection above the room noise; lower if Noha misses replies
 # texts = ["Olá! Eu sou Noha...", "..."] # defaults: four Portuguese variants in noha/config.py
 # style = "Anfitrião simpático..." # delivery instructions for the synthesized greetings

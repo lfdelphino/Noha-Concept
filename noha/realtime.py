@@ -124,8 +124,11 @@ class Playback:
 
 
 async def conversation(config, key, instructions, audio, greet=True, state_callback=lambda _: None,
-                       greeting=None, preroll=None):
-    """greeting: text Noha already played locally; preroll: the visitor's speech heard meanwhile."""
+                       greeting=None, preroll=None, stats=None):
+    """greeting: text Noha already played locally; preroll: the visitor's speech heard meanwhile;
+    stats["replies"] counts visitor turns answered, kept even if the session later fails."""
+    stats = stats if stats is not None else {}
+    stats.setdefault("replies", 0)
     from websockets.asyncio.client import connect
     url = "wss://api.openai.com/v1/realtime?" + urlencode({"model": config.model})
     started = time.monotonic()
@@ -194,6 +197,7 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
                         await send({"type": "conversation.item.delete", "item_id": event["item_id"]})
                     else:
                         counts["replies"] += 1
+                        stats["replies"] += 1
                         state.last_user = time.monotonic()
                         state.generating = True
                         await send({"type": "response.create"})
@@ -229,7 +233,8 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
             raise ConnectionError("Realtime desconectado")
 
         async def capture():
-            await asyncio.wait_for(ready.wait(), 30)
+            async with asyncio.timeout(30):  # not wait_for: on Python 3.11 it can swallow the cancellation
+                await ready.wait()
             # Do not fill the mic queue while DNS/TLS/session negotiation is pending.
             audio.start_capture()
             if preroll and (heard := preroll.take()):
@@ -242,7 +247,8 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
 
         async def watchdog():
             nonlocal ending
-            await asyncio.wait_for(ready.wait(), 30)
+            async with asyncio.timeout(30):
+                await ready.wait()
             last_check = ending_at = 0
             while True:
                 audio.check()

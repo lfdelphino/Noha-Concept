@@ -15,7 +15,8 @@ async def command(*args, timeout=20, check=True, input_text=None):
                                               stderr=asyncio.subprocess.PIPE,
                                               stdin=asyncio.subprocess.PIPE if input_text is not None else None)
     try:
-        stdout, _ = await asyncio.wait_for(proc.communicate(input_text.encode() if input_text is not None else None), timeout)
+        async with asyncio.timeout(timeout):
+            stdout, _ = await proc.communicate(input_text.encode() if input_text is not None else None)
     except BaseException:
         if proc.returncode is None:
             proc.kill()
@@ -202,7 +203,8 @@ class NetworkManager:
         if self.dns and self.dns.returncode is None:
             self.dns.terminate()
             try:
-                await asyncio.wait_for(self.dns.wait(), 5)
+                async with asyncio.timeout(5):
+                    await self.dns.wait()
             except TimeoutError:
                 self.dns.kill()
                 await self.dns.wait()

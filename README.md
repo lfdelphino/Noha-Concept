@@ -1,302 +1,214 @@
 # Noha — anfitrião de voz para Raspberry Pi 5
 
-Aplicação sem câmera, com `gpt-realtime-2.1-mini` por padrão (o modelo Realtime mais barato), modelos de voz selecionáveis, microfone e alto-falante USB, sensor HC-SR501, painel de administração e configuração de Wi-Fi pelo celular. A personalidade e os fatos da Noha Concept foram extraídos de `robo.py`; o rascunho original permanece como referência.
+Noha recebe os visitantes da casa modelo da Noha Concept por voz: percebe quem chega com um sensor de presença, cumprimenta, responde dúvidas sobre a casa em português (ou no idioma do visitante) e se despede. Não usa câmera nem tela; tudo que o visitante precisa ouvir, inclusive como configurar o Wi-Fi, é dito pelo alto-falante.
 
-O Pi captura/reproduz áudio e detecta movimento; a conversa depende da internet e da API OpenAI. Não há modelo local, ferramentas externas ou etapa separada de transcrição. GPT-Live utiliza sua própria conexão de áudio, sem um modelo de backend adicional.
+A equipe acompanha e ajusta o robô pelo **painel**, no celular ou no computador: estado ao vivo, visitas, custos, voz, personalidade, saudações, sensor e sistema. A conversa usa a API Realtime da OpenAI (`gpt-realtime-2.1-mini` por padrão, o modelo mais barato); o Pi cuida do áudio, do sensor, da rede e do painel. A personalidade e os fatos da Noha Concept vieram do rascunho original, `robo.py`, mantido como referência.
+
+## Como uma visita acontece
+
+1. **Presença confirmada.** Quem só passa gera uma detecção curta e é ignorado. Noha cumprimenta depois de 6 s de movimento contínuo ou de 2 detecções em 20 s.
+2. **Saudação gravada, sem custo.** Uma das frases de saudação toca do próprio robô. Elas são sintetizadas uma vez, na voz escolhida, e ficam salvas no Pi.
+3. **Escuta local.** Por até 10 s Noha ouve, ainda sem chamar a API. Se ninguém responde, a visita termina sem custo.
+4. **Conversa.** Quando a pessoa fala, a conversa Realtime começa com o início da fala preservado e sem repetir a saudação. Termina após 30 s de silêncio, por despedida ou pelo limite da visita.
+5. **Sem internet.** Se a pessoa fala e o robô está offline, Noha explica em voz alta como conectá-lo pelo celular: a rede `Noha-Setup-XXXX` deste Pi, soletrada, e o endereço do portal. Sem nenhuma gravação ainda (primeiro boot offline), cumprimenta e explica com a voz offline do `espeak-ng`.
+
+Nada de áudio ou texto é guardado: o painel mostra só números (visitas, duração, respostas, tokens e custo estimado). Um limite diário de custo (US$ 2 por padrão) impede novas conversas quando atingido.
+
+## O painel
+
+Na mesma rede do Pi, abra **http://noha.local**. Pela internet, use o endereço ngrok configurado em **Sistema → Acesso pela internet**.
+
+**Primeiro acesso.** A senha inicial é `admin` e só funciona na rede do local: pela internet ela é recusada. Depois de entrar, o painel pede uma senha nova antes de continuar. Para redefinir no próprio Pi, sem a senha atual: `sudo noha dashboard-password`.
+
+| Página | Para quê |
+|---|---|
+| **Início** | O que Noha está fazendo agora; saudações por movimento ligadas/desligadas; **Testar saudação**; volume do alto-falante; visitas, conversas, custo e tempo de hoje; sensor ao vivo com as detecções dos últimos 10 minutos; diagnóstico com o caminho para resolver cada problema. |
+| **Atividade** | Hoje, 7 ou 30 dias: visitas, quantas conversaram, custo e tempo; gráfico por hora ou dia; como as visitas terminaram; lista das visitas recentes; uso por modelo. |
+| **Ajustes** | Voz e personalidade, frases de saudação, conversa, sensor de presença, áudio e LEDs, custos e chave OpenAI. Cada grupo salva separadamente; Noha aplica quando estiver livre e reinicia a voz em alguns segundos. Alterações pendentes podem ser descartadas. |
+| **Sistema** | Diagnóstico completo, atualizações, acesso pela internet (ngrok), rede, saúde do Raspberry Pi, senha do painel e eventos ao vivo com filtros. |
+
+Os valores salvos ficam em `/etc/noha`, com cópia em `/var/lib/noha/backups`. Se a voz não reiniciar com a configuração nova, a anterior volta sozinha e o painel avisa. Chaves salvas nunca voltam ao navegador.
+
+O acesso local usa HTTP; a senha trafega sem criptografia na rede do local. O endereço ngrok usa HTTPS.
+
+### Tela do próprio Pi
+
+O robô não precisa de tela. Se houver uma ligada ao Pi, o instalador abre nela o **painel do robô**: um quadro só de leitura, em letras grandes, com o estado atual, visitas e custo de hoje, o sensor e os itens do diagnóstico. Ajustes nunca são feitos por ela. O quadro entra com um token próprio (`/etc/noha/kiosk-token`) que só funciona em um navegador no próprio Pi.
+
+```bash
+sudo python3 scripts/kiosk.py --user "$USER"           # ativa
+sudo python3 scripts/kiosk.py --user "$USER" --remove  # desativa e revoga o token
+```
+
+O instalador configura o login automático do desktop e a tela sem descanso, o que também mantém disponível a saída de áudio HDMI. Use `--no-kiosk` na instalação para não configurar.
 
 ## Instalação
 
-Requer Raspberry Pi 5, Raspberry Pi OS **Desktop ARM64 Bookworm ou Trixie**, NetworkManager, PipeWire, acesso inicial à internet para instalar pacotes e uma chave de API com acesso ao modelo. A instalação não precisa do login automático do desktop. Use a mesma conta do desktop para evitar disputa pelo dispositivo de áudio.
+Requer Raspberry Pi 5, Raspberry Pi OS **Desktop ARM64 Bookworm ou Trixie**, NetworkManager, PipeWire, internet durante a instalação e uma chave de API OpenAI com acesso ao modelo. Use a mesma conta do desktop para evitar disputa pelo dispositivo de áudio.
 
-Copie esta pasta para o Pi, conecte os dispositivos USB e execute no terminal:
+Copie esta pasta para o Pi, conecte os dispositivos USB e execute:
 
 ```bash
 sudo bash scripts/install.sh --user "$USER"
 sudo reboot
 ```
 
-O instalador pede o país do Wi-Fi quando necessário, mostra os nomes estáveis dos dispositivos de áudio e solicita a chave de API com entrada oculta. Não precisa colar a chave no código. A instalação também cria a fonte/saída de cancelamento de eco e verifica se o PipeWire as publicou.
-
-Para informar os dispositivos explicitamente, use os valores `name` de `noha audio-list`:
+O instalador pede o país do Wi-Fi quando necessário, mostra os dispositivos de áudio e a chave de API com entrada oculta, cria o cancelamento de eco e instala o painel, o acesso ngrok, o mDNS (`noha.local`), a voz offline `espeak-ng` e as atualizações automáticas. Para informar os dispositivos sem perguntas, use os nomes de `noha audio-list`:
 
 ```bash
 sudo bash scripts/install.sh --user "$USER" --mic 'alsa_input.usb-...' --speaker 'alsa_output.usb-...'
 ```
 
-Reexecutar o instalador preserva personalidade, chave, redes salvas e demais opções existentes. Arquivos Noha que precisarem ser substituídos têm cópias em `/var/lib/noha/backups`. Não atualiza automaticamente o sistema operacional. Instale primeiro com acesso local ao Pi: caso fique sem internet, o serviço de recuperação trocará o Wi-Fi para modo de configuração.
+Opções: `--hostname outro-nome` (padrão `noha`), `--echo-cancel auto|pipewire|xvf3800`, `--country BR`, `--no-kiosk`, `--disable-i2c`. Reexecutar o instalador preserva personalidade, chave, senha, redes salvas e ajustes.
 
-Depois de reiniciar:
+Depois de reiniciar, sem sudo:
 
 ```bash
-noha doctor
-noha audio-list
-noha trigger
-noha status
-systemctl --user status noha
-sudo systemctl status noha-network
+noha doctor          # configuração, chave, áudio, GPIO e LEDs
+noha trigger         # simula a chegada de um visitante
+noha status          # estado publicado pelo serviço de voz
+sudo noha sensor off # desliga as saudações por movimento (on para religar)
 ```
 
-`noha trigger` simula uma entrada na sala e aciona o serviço da conta atual. Execute comandos de áudio e voz como o usuário do desktop, **sem sudo**. Para rodar em primeiro plano, pare a instância do serviço:
+Para rodar a voz em primeiro plano:
 
 ```bash
 systemctl --user stop noha
-set -a
-. /etc/noha/secrets.env
-set +a
+set -a; . /etc/noha/secrets.env; set +a
 noha run --simulate-motion
-# Ao terminar com Ctrl+C:
-systemctl --user start noha
+systemctl --user start noha   # depois de Ctrl+C
 ```
 
-## Alto-falante e cancelamento de eco
+## Hardware
 
-O microfone é o reSpeaker XVF3800; o alto-falante pode ser HDMI, a saída do Pi, um dispositivo USB ou a saída P2/JST do próprio XVF3800. Com `echo_cancel = "auto"` (padrão, seção `[audio]`), alto-falante ligado ao XVF3800 usa o cancelamento de eco do chip, que recebe o próprio áudio como referência, e o instalador remove o AEC do PipeWire para não processar o som duas vezes. Qualquer outra saída usa o AEC WebRTC do PipeWire (`noha_echo_source`/`noha_echo_sink`). Para trocar de alto-falante, reexecute o instalador com o novo nome de `noha audio-list` e reinicie:
+### Sensor de presença (HC-SR501)
 
-```bash
-sudo bash scripts/install.sh --user "$USER" --speaker 'alsa_output.usb-Seeed_Studio_reSpeaker_XVF3800_...'
-```
-
-`--echo-cancel pipewire` ou `--echo-cancel xvf3800` força um modo; `noha doctor` mostra qual está ativo.
-
-## LEDs do reSpeaker XVF3800
-
-Com o reSpeaker XVF3800 USB (firmware USB padrão), o anel de 12 LEDs mostra o estado da Noha: âmbar pulsando enquanto o sensor aquece, azul pulsando ao conectar, direção de quem fala (DoA) enquanto escuta, verde-água enquanto fala, arco-íris durante atualizações, vermelho em erros e apagado aguardando movimento. O instalador adiciona `python3-usb`, uma regra udev para o grupo `plugdev` e inclui o usuário nesse grupo; reinicie após instalar. `noha doctor` lê a versão do firmware para confirmar o acesso. Falhas de USB nos LEDs nunca interrompem a conversa. Ajuste em `/etc/noha/noha.toml`:
-
-```toml
-[leds]
-enabled = true
-brightness = 96 # 0-255
-```
-
-## Painel de administração
-
-A versão **1.3.0 exige reexecutar o instalador uma vez** (LEDs, udev e grupo plugdev), assim como a 1.2.1 ao migrar da série 1.1, inclusive em Pis que já recebem atualizações automáticas. Copie o projeto ao Pi, execute `sudo bash scripts/install.sh --user "$USER"` e reinicie. O instalador adiciona Avahi/mDNS, ngrok e os serviços do painel. Não publica nem configura uma conta ngrok automaticamente.
-
-Na mesma rede do Pi, abra **http://noha.local** no celular ou computador. Não precisa descobrir o IP atribuído pelo roteador nem conectar uma tela ao Pi. O nome funciona quando o Raspberry está conectado ao roteador como cliente Wi-Fi ou por Ethernet. Redes de convidados, isolamento de dispositivos ou bloqueio de multicast podem impedir a descoberta local. Para outro nome, use `--hostname outro-nome` no instalador; reinstalações preservam o nome registrado.
-
-A senha inicial é **admin**. Altere em **Ajustes → Senha do painel**; a troca encerra as sessões existentes. Para recuperar pelo terminal, sem colocar a senha no histórico:
-
-```bash
-sudo noha dashboard-password
-```
-
-Digite a nova senha e confirme; Enter nas duas perguntas restaura `admin`. A senha fica armazenada como hash com salt, e reinstalações preservam a senha alterada. O acesso local usa HTTP, portanto senha e alterações trafegam sem criptografia na LAN. O endereço ngrok usa HTTPS.
-
-O painel foi desenhado primeiro para celular, com quatro áreas:
-
-- **Visão geral:** estado da voz, modelo ativo e gasto estimado do dia; sensor de movimento ao vivo (detecção agora, último movimento, aquecendo/rearmando/confirmando/pronto e as detecções dos últimos 10 minutos) com o botão para ligar ou desligar as saudações por movimento; conexão, prontidão de áudio, CPU, temperatura, memória, disco e os dois endereços do painel.
-- **Atividade:** conversas, saudações locais (sem custo), duração, tokens informados pelo modelo, erros e reconexões, hoje/7/30 dias e por modelo. O custo é estimado pelos preços publicados da OpenAI. O histórico numérico persiste por 90 dias em `/var/lib/noha-metrics`, sem áudio ou transcrições. Hoje segue o fuso do Pi. Contadores não fornecidos, como tokens de voz do GPT-Live, aparecem como indisponíveis.
-- **Ajustes:** instruções do agente, modelo, voz compatível, GPIO BCM com pino físico, microfone, alto-falante e modo de cancelamento de eco, substituição da chave OpenAI, senha e configurações ngrok. Campos de chave vazios mantêm a credencial existente; valores salvos não são devolvidos ao navegador.
-- **Sistema:** até 100 eventos recentes com filtros e acompanhamento ao vivo; versões instalada/disponível, última verificação, estado e botões para verificar/instalar atualizações.
-
-Mudanças de voz, instruções, GPIO e chave aguardam a conversa atual terminar. O painel distingue configurações pendentes da configuração ativa. A gravação é atômica, com cópias em `/var/lib/noha/backups`; falha de inicialização restaura os arquivos anteriores. A mudança de GPIO verifica se a linha pode ser usada e não altera funções de hardware do sistema automaticamente. Desligue o Pi antes de mudar a fiação física.
-
-O seletor inclui GPT Realtime 1.5, GPT Live 1, Realtime 2.1 Mini, 2.1, 2 e as famílias GPT-4o Realtime. Modelos legados recebem indicação; IDs retirados ficam desabilitados. O acesso depende da sua conta OpenAI e um erro não causa troca silenciosa de modelo. GPT-Live tem um adaptador separado; respostas faladas, interrupções e saudações precisam de validação com o hardware definitivo.
-
-### Tela do próprio Pi
-
-O instalador configura a tela ligada ao Pi para abrir o painel em tela cheia, já autenticado, a cada boot: login automático do desktop, Chromium em modo quiosque (reaberto se fechar) e tela sem descanso, o que também mantém a saída de áudio HDMI disponível. Use `--no-kiosk` para não configurar. Para ativar ou remover depois:
-
-```bash
-sudo python3 scripts/kiosk.py --user "$USER"
-sudo python3 scripts/kiosk.py --user "$USER" --remove
-```
-
-O login automático usa um token próprio em `/etc/noha/kiosk-token`, legível apenas pelo root e pela conta do desktop, independente da senha do painel. O endereço `/kiosk` só responde a navegadores no próprio Pi: o ngrok também conecta pelo loopback, mas com Host e `X-Forwarded-For` próprios, e é recusado. Para revogar o acesso da tela, remova o painel local ou apague o token e execute o script de novo.
-
-### Acesso ngrok sempre ativo
-
-Crie sua conta ngrok e copie o **authtoken do agente** e o **hostname HTTPS atribuído à conta**. No painel local, abra **Ajustes → Acesso ngrok**, preencha os campos e salve. A integração usa authtoken, não a chave da API de gerenciamento ngrok. O plano gratuito atribui um hostname fixo; escolher um hostname próprio depende do plano da conta.
-
-Depois de configurado, o serviço ngrok inicia em cada boot, mantém o endereço público em paralelo com `noha.local` e tenta reconectar após quedas. Se ainda não houver credenciais, fica aguardando configuração e o painel mostra esse estado. Não há encaminhamento de portas no roteador. Se trocar o hostname, abra o endereço novo: a resposta de gravação chega antes do reinício do túnel. Falhas do túnel não impedem o acesso local.
-
-O ngrok recebe tráfego apenas para `http://127.0.0.1:80`. A configuração é gerada pelo sistema e validada antes de salvar; não aceita upstream arbitrário. Credenciais ficam fora dos releases, e a inspeção local de corpos de requisição está desativada. O plano gratuito tem limites de requisições/tráfego e pode apresentar um aviso inicial no navegador. O painel utiliza um fluxo de eventos e o suspende quando a página fica oculta, reduzindo requisições.
-
-O mesmo processo web atende a porta 80 continuamente. Conexões destinadas ao endereço do hotspot recebem exclusivamente o portal de Wi-Fi. A escolha usa o endereço local da conexão, sem confiar no hostname enviado pelo navegador; o firewall do hotspot mantém a restrição. O processo web não é root. Um serviço separado, com socket Unix restrito, aplica apenas as operações administrativas permitidas.
-
-## Ligações do HC-SR501
-
-Desligue a alimentação para conectar os fios. Identifique os pinos pelas inscrições no módulo, pois a ordem física varia entre placas.
+Desligue a alimentação para conectar. Confira os pinos pelas inscrições do módulo.
 
 | HC-SR501 | Raspberry Pi 5 |
 |---|---|
 | VCC | 5 V, pino físico 2 ou 4 |
 | GND | GND, por exemplo pino físico 6 |
-| OUT (saída lógica de 3,3 V) | **BCM GPIO3, pino físico 5** |
+| OUT (3,3 V) | **GPIO 3, pino físico 5** |
 
-Não conecte 5 V ao GPIO. O pino físico 3 é GPIO2 e não é o pino escolhido neste projeto. O GPIO3 possui pull-up físico; o programa usa a saída ativa do PIR sem adicionar pull-down por software.
+Não ligue 5 V ao GPIO. O GPIO 3 também é o SCL do I²C; o instalador detecta o conflito e, sem dispositivos I²C, `--disable-i2c` libera o pino (reinicie e rode o instalador de novo).
 
-GPIO3 também é SCL do I²C. O instalador verifica conflito antes de prosseguir. Se não há nenhum dispositivo I²C necessário:
+Para ignorar quem só passa:
 
-```bash
-sudo bash scripts/install.sh --user "$USER" --disable-i2c
-sudo reboot
-sudo bash scripts/install.sh --user "$USER"
-```
+- Jumper em **H** (redisparo): a saída fica alta enquanto houver movimento.
+- Temporizador (Tx) no mínimo, cerca de 3 s, e **Movimento contínuo para confirmar** acima disso (Ajustes → Sensor de presença).
+- Sensibilidade (Sx) reduzida e o sensor apontado para onde o visitante para, não para o corredor. Fita sobre parte da lente estreita o cone.
+- Acompanhe na página Início: as detecções aparecem mesmo com as saudações desligadas.
 
-Comece com o temporizador do HC-SR501 baixo e sensibilidade moderada. Há 60 segundos de estabilização antes do primeiro disparo. O PIR detecta mudança de movimento/calor, não identifica pessoas nem confirma que alguém saiu.
+Um radar mmWave **LD2410** funciona no mesmo GPIO (saída OUT de 3,3 V), detecta pessoas paradas e tem alcance configurável: é a melhor troca para ignorar quem passa longe. O HC-SR04 mede distância (TRIG/ECHO) e não é compatível sem outro código.
 
-Quem só passa gera uma detecção curta. Por isso Noha cumprimenta apenas depois de `confirm_seconds` (6 s) de movimento contínuo ou de `confirm_pulses` (2) detecções em `confirm_window_seconds` (20 s), na seção `[motion]`; `confirm_pulses = 1` volta a cumprimentar na primeira detecção. Para o HC-SR501:
+### Alto-falante e cancelamento de eco
 
-- Jumper em **H** (redisparo): a saída fica alta enquanto houver movimento, o que alimenta a regra de movimento contínuo.
-- Temporizador (Tx) no mínimo, cerca de 3 s, e `confirm_seconds` acima desse tempo; senão uma única passagem já parece movimento contínuo.
-- Sensibilidade (Sx) reduzida e o sensor apontado para onde o visitante para, não para o corredor. Tapar parte da lente com fita estreita o cone.
-- Acompanhe o efeito no painel: a linha do tempo de detecções continua ativa mesmo com as saudações desligadas.
-
-Um radar mmWave LD2410 também funciona neste GPIO (saída OUT de 3,3 V) e detecta pessoas paradas, com alcance configurável; é a melhor troca para ignorar quem passa longe. O HC-SR04 é um medidor ultrassônico de distância (pinos TRIG/ECHO), não um sensor de presença, e não é compatível sem outro código.
-
-## Conversa e áudio
-
-- Movimento confirmado toca uma saudação curta em português brasileiro **gravada localmente**, sem chamar a API. As saudações (seção `[greeting]`) são sintetizadas uma vez com `gpt-4o-mini-tts` na mesma voz e ficam em `~/.cache/noha/greetings`; trocar voz, textos ou estilo gera novas. Até estarem prontas, ou com `local = false`, o modelo de voz cumprimenta como antes.
-- Depois da saudação, Noha escuta localmente por `unanswered_seconds` (10 s). Só quando alguém fala a sessão Realtime é aberta, com o início da fala preservado e o aviso de que o visitante já foi cumprimentado. Sem resposta, nada é cobrado. O log mostra o piso e o pico de ruído (`piso_dbfs`, `pico_dbfs`) para ajustar `speech_margin_db`.
-- Uma sessão que ainda não ouviu o visitante também fecha após `unanswered_seconds`, em vez de `idle_seconds`.
-- **Sem internet**, quando alguém fala depois da saudação, Noha explica em português como configurá-la pelo celular: a rede `Noha-Setup-XXXX` deste Pi, soletrada, e o endereço do portal. A explicação é sintetizada na voz da Noha junto com as saudações; antes disso (primeiro boot sem internet ou sem chave), usa a voz offline do `espeak-ng`, instalada pelo instalador. Robôs atualizados automaticamente sem reexecutar o instalador ficam sem essa reserva até `sudo apt install espeak-ng`.
-- A voz padrão é `alloy`, a mais neutra. Instalações existentes mantêm a voz salva; troque em **Ajustes**.
-- O botão **Saudar por movimento** no painel, ou `sudo noha sensor on|off`, desliga as saudações sem parar o serviço, inclusive após reiniciar. `noha trigger` continua funcionando.
-- Noha segue o idioma do visitante, responde em poucas frases e mantém os fatos da personalidade.
-- Pode ouvir durante a fala. Quando o visitante interrompe, esvazia os buffers de reprodução e informa à API quanto do áudio foi realmente reproduzido, usando uma estimativa conservadora do relógio de áudio.
-- Fecha a sessão após `idle_seconds` (30 s) sem fala do visitante, depois de concluir a resposta em andamento. A câmera nunca é utilizada.
-- Para outra saudação, exige 30 segundos contínuos sem movimento e 120 segundos desde a saudação anterior. Movimento durante a conversa não inicia outra sessão.
-- Áudio não é enviado enquanto o robô está ocioso. Gravações e transcrições não são persistidas; o histórico da sessão fica na API durante a conexão e não é reconstruído após uma queda.
-- Falhas temporárias têm até cinco tentativas com espera crescente. Chave inválida, falta de saldo e falta de permissão são tratadas como erros da API, sem ativar o hotspot.
-
-O caminho de áudio é:
+O microfone é o reSpeaker XVF3800. O alto-falante pode ser HDMI, a saída do Pi, USB ou a saída P2/JST do próprio XVF3800. No modo automático, um alto-falante ligado ao XVF3800 usa o cancelamento de eco do chip; qualquer outro usa o AEC WebRTC do PipeWire. Troque microfone, alto-falante ou modo em **Ajustes → Áudio e LEDs**: o painel reescreve as rotas do PipeWire e reinicia o áudio. Mantenha o microfone afastado do alto-falante e comece com volume moderado.
 
 ```text
-Microfone USB → PipeWire AEC → GStreamer PCM 24 kHz → OpenAI Realtime
-Alto-falante USB ← PipeWire AEC (referência) ← GStreamer ← áudio da API
+Microfone → AEC → GStreamer PCM 24 kHz → OpenAI Realtime
+Alto-falante ← AEC (referência) ← GStreamer ← áudio da API
 ```
 
-O cancelamento de eco depende do ambiente, volume e posicionamento. Mantenha microfone afastado do alto-falante, comece com volume moderado e confirme que Noha não responde à própria voz. Dispositivos são selecionados pelo `node.name`, não pelo número temporário da placa. A desconexão USB interrompe a sessão e provoca novas tentativas; não troca automaticamente para outro microfone.
+### LEDs do reSpeaker XVF3800
 
-## Configuração Wi-Fi pelo celular
+O anel mostra o estado: âmbar pulsando ao aquecer, azul ao conectar, a direção de quem fala ao escutar, verde-água ao falar, arco-íris em atualizações, vermelho em erros e apagado aguardando. Brilho e liga/desliga ficam em Ajustes. Falhas de USB nos LEDs nunca interrompem a conversa.
 
-Após 90 segundos sem internet, conecte o celular à rede **aberta** `Noha-Setup-XXXX`. Basta falar com a Noha para ouvir estes passos. O sufixo é específico do Pi. O sistema pode abrir a página automaticamente; se não abrir, use **http://192.168.50.1**. Confirme no celular que deseja permanecer conectado a uma rede sem internet.
+## Wi-Fi pelo celular
 
-Escolha uma rede da lista ou digite o SSID, marque se ela é oculta, selecione a segurança e informe a senha. Suporta redes abertas, WPA/WPA2 Personal e WPA3 Personal. Redes corporativas 802.1X, WEP e login em portais de hotéis não fazem parte desta versão.
+Após 90 segundos sem internet, o Pi abre a rede **aberta** `Noha-Setup-XXXX` (sufixo próprio deste Pi). Basta falar com a Noha para ouvir os passos. Conecte o celular a essa rede; a página de configuração costuma abrir sozinha, senão use **http://192.168.50.1**, e confirme que quer continuar numa rede sem internet.
 
-Ao pressionar Conectar, a página explica o próximo passo e aguarda três segundos antes de desligar o hotspot. O Pi tenta a conexão por até 45 segundos, depois verifica a internet. Se falhar, a rede Noha-Setup volta; reconecte-se e reabra a página para ler o resultado. Uma associação válida sem internet é salva para novas tentativas. Uma tentativa com credenciais inválidas não apaga redes anteriores.
+Escolha a rede ou digite o SSID, a segurança e a senha. Suporta redes abertas, WPA/WPA2 e WPA3 Personal; redes corporativas 802.1X, WEP e portais de hotel não. Ao conectar, o hotspot desliga, o Pi tenta por até 45 s e verifica a internet; se falhar, a rede de configuração volta para você ver o resultado. Credenciais erradas não apagam redes salvas. A cada cinco minutos sem uso da página, o Pi tenta de novo até três redes salvas.
 
-A busca de redes também pode interromper a conexão com o celular. O Pi usa um único rádio: não mantém o hotspot enquanto tenta entrar no Wi-Fi. A cada cinco minutos, se a página estiver sem interação há dois minutos, tenta até três perfis salvos, alternando os perfis entre tentativas. Essa tentativa pode deixar o hotspot indisponível por cerca de dois minutos e meio. Ethernet com internet também permite encerrar a configuração.
+Durante o hotspot, regras `nftables` limitam a interface a DHCP, DNS e à página de configuração, sem acesso à internet nem SSH por ela. A internet é verificada por respostas HTTP 204 em `network.connectivity_urls`.
 
-A rede aberta permite configuração por quem estiver por perto, conforme a opção escolhida para o projeto. O portal não recebe nem mostra a chave OpenAI. Durante o hotspot, regras temporárias `nftables` limitam a interface a DHCP, DNS e HTTP do portal; não há compartilhamento de internet nem acesso SSH por essa interface. Regras de firewall externas que bloqueiem essas portas precisam permitir o portal.
+## Arquivos e serviços
 
-As verificações de internet exigem HTTP 204 via HTTPS nos endereços em `network.connectivity_urls`; bloqueio desses endereços pode ativar o portal mesmo que outros sites funcionem. Use endpoints de conectividade acessíveis na rede local. Erros da API OpenAI não são usados como teste de internet.
-
-## Configurações e serviços
-
-| Local | Finalidade |
+| Local | Conteúdo |
 |---|---|
-| `/etc/noha/noha.toml` | Modelo, voz, dispositivos, GPIO, temporizadores e rede |
-| `/etc/noha/personality.txt` | Personalidade e informações da Noha Concept |
-| `/etc/noha/secrets.env` | `OPENAI_API_KEY=...`, somente root e grupo `noha` |
-| `/etc/noha/dashboard-password.json` | Hash da senha e revisão para invalidar sessões |
-| `/etc/noha/presence.json` | Saudações por movimento ligadas ou desligadas (painel ou `sudo noha sensor`) |
-| `/etc/noha/ngrok.json`, `/etc/noha/ngrok.yml` | Authtoken e configuração gerada ngrok; acesso restrito |
-| `/var/lib/noha-metrics/usage.sqlite3` | Métricas numéricas persistentes |
-| `/opt/noha/current` | Link atômico para a versão ativa e seu ambiente Python |
-| `/opt/noha/releases/` | Versões preparadas e anteriores, preservadas para rollback |
-| `~/.config/pipewire/pipewire.conf.d/80-noha-echo.conf` | Rotas físicas do cancelamento de eco |
-| `noha.service` (usuário) | Sensor, sessão de voz e áudio; inicia com lingering |
-| `noha-network.service` (sistema) | NetworkManager, recuperação, DHCP/DNS e socket local |
-| `noha-portal.service` (sistema) | Painel e portal Wi-Fi na porta 80, sempre ativo, sem root |
-| `noha-admin.service` (sistema) | Operações administrativas por socket Unix restrito |
-| `noha-ngrok.service` (sistema) | Acesso HTTPS ngrok, sempre ativo após configuração |
-| `noha-update.timer` (sistema) | Verifica releases públicas a cada hora |
-| `noha-update-check.timer` (sistema) | Verifica logo após o boot e repete se estiver offline |
+| `/etc/noha/noha.toml` | Todos os ajustes (o painel edita este arquivo, preservando comentários) |
+| `/etc/noha/personality.txt` | Personalidade e fatos da Noha Concept |
+| `/etc/noha/secrets.env` | `OPENAI_API_KEY`, somente root e grupo `noha` |
+| `/etc/noha/presence.json` | Saudações por movimento ligadas ou desligadas |
+| `/etc/noha/dashboard-password.json` | Hash da senha do painel |
+| `/etc/noha/ngrok.json`, `ngrok.yml` | Acesso pela internet |
+| `/var/lib/noha-metrics/usage.sqlite3` | Métricas e visitas, 90 dias, só números |
+| `~/.cache/noha/greetings` | Saudações e instruções de Wi-Fi gravadas |
+| `/opt/noha/current` | Versão ativa; versões anteriores em `/opt/noha/releases` |
+| `noha.service` (usuário) | Voz, sensor, áudio e LEDs |
+| `noha-network.service` | Wi-Fi, recuperação e hotspot |
+| `noha-portal.service` | Painel, quadro do robô e portal Wi-Fi na porta 80, sem root |
+| `noha-admin.service` | Operações administrativas por socket Unix restrito |
+| `noha-ngrok.service` | Túnel HTTPS do acesso pela internet |
+| `noha-update.timer`, `noha-update-check.timer` | Atualizações automáticas |
 
-Não altere somente `audio.microphone`/`audio.speaker` no TOML: reexecute o instalador com `--mic`/`--speaker` para atualizar também as rotas PipeWire. Dispositivos USB sem número de série podem mudar de nome ao trocar de porta; selecione-os novamente nesse caso.
+O processo web não roda como root: as operações privilegiadas passam por um serviço separado, que aceita apenas as operações do painel. Para editar à mão, use `sudoedit` e reinicie a voz (`systemctl --user restart noha`).
 
-Para cadastrar ou corrigir a chave sem expô-la no histórico:
-
-```bash
-sudoedit /etc/noha/secrets.env
-systemctl --user restart noha
-```
-
-Alterações manuais de personalidade ou temporizadores exigem reiniciar o serviço. Alterações pelo painel são aplicadas quando a conversa termina. Para acompanhar estados, erros e contagem de tokens:
+Para acompanhar:
 
 ```bash
 journalctl --user -u noha -f
-sudo journalctl -u noha-network -u noha-portal -f
-journalctl --user -u pipewire -u wireplumber -b
+sudo journalctl -u noha-network -u noha-portal -u noha-admin -f
 ```
 
-`noha doctor` verifica a configuração, presença da chave sem exibi-la, dispositivos e nós AEC, plugins GStreamer e função do GPIO. Ele não comprova qualidade acústica nem acesso à API: recusas da OpenAI (sem créditos, chave inválida, modelo sem acesso) aparecem no painel após a primeira tentativa de conversa (`noha trigger`). Use `pinctrl get 3` para inspecionar o pino. O portal também funciona se a chave estiver ausente; a voz informa o problema no painel e nos logs.
-
-Uma saída HDMI só existe no PipeWire se a tela estava ligada quando ele iniciou. Se a tela acordar depois, o serviço reinicia o PipeWire sozinho quando estiver ocioso.
+Cada saudação registra o piso e o pico de ruído (`piso_dbfs`, `pico_dbfs`): use-os para ajustar **Sensibilidade à voz** se Noha perder respostas ou conectar com ruído.
 
 ## Atualizações automáticas
 
-O instalador habilita atualizações de [lfdelphino/Noha-Concept](https://github.com/lfdelphino/Noha-Concept), sem token GitHub. Uma consulta sem instalação é agendada cerca de 30 segundos após o boot; sem internet, tenta novamente a cada dois minutos. A instalação automática continua cerca de cinco a oito minutos após o boot e depois a cada hora, com pequeno atraso aleatório. O painel permite verificar ou solicitar instalação manual. Apenas releases estáveis com número maior que o instalado são aplicadas; commits e tags sem release não alteram o robô.
-
-Para instalações anteriores a esta funcionalidade, copie a versão atual do projeto ao Pi e **reexecute o instalador uma vez**, depois reinicie. Isso migra os serviços para `/opt/noha/current`, habilita o timer e instala o atualizador independente do ambiente Python da aplicação.
-
-O atualizador baixa `noha-pi.zip`, confere seu SHA-256 contra os metadados HTTPS do GitHub, rejeita caminhos/links inválidos no ZIP e prepara um ambiente Python separado. Durante o preparo, a versão atual continua funcionando. Não altera `/etc/noha`, a personalidade local, a chave, os perfis Wi-Fi nem as rotas físicas do áudio.
-
-A troca é imediata, inclusive durante uma conversa, que é encerrada. Novas saudações ficam bloqueadas até o fim. Reinicia voz, rede, painel, administração e ngrok e verifica heartbeat, versão e serviços durante pelo menos 15 segundos. Sensor, áudio ou chave indisponíveis não revertem a atualização, pois uma correção desses problemas precisa conseguir ser instalada. O próprio atualizador também é substituído pela versão nova; não realiza chamadas pagas para testar a API. Configurações pendentes do painel são aplicadas antes da instalação de outra versão.
-
-Uma falha de inicialização restaura o link e os arquivos de serviço anteriores. Uma interrupção de energia durante a troca é detectada por `noha-update-recover.service` no próximo boot, antes dos serviços do robô. Uma release rejeitada fica bloqueada até uma nova publicação ou tentativa manual. Os diretórios anteriores ficam preservados; acompanhe o espaço livre ao longo do tempo.
+O Pi instala releases estáveis de [lfdelphino/Noha-Concept](https://github.com/lfdelphino/Noha-Concept): verifica logo após o boot e depois a cada hora. A troca é imediata, inclusive durante uma conversa. O atualizador confere o SHA-256 do pacote, prepara a versão nova em paralelo, reinicia os serviços e verifica por pelo menos 15 s; se a versão nova não subir, volta à anterior sozinho. Não altera `/etc/noha`, a chave nem as redes.
 
 ```bash
-sudo noha-update --check       # consulta sem baixar/instalar uma nova versão
-sudo noha-update               # atualiza agora, mesmo durante uma conversa
-sudo noha-update --retry       # tenta novamente a release que falhou
-sudo noha-update --rollback    # volta à versão anterior registrada
-systemctl list-timers noha-update.timer
-sudo journalctl -u noha-update -u noha-update-recover -b
+sudo noha-update --check     # só consulta
+sudo noha-update             # atualiza agora
+sudo noha-update --retry     # tenta de novo uma versão rejeitada
+sudo noha-update --rollback  # volta à versão anterior
 ```
 
-Sem internet ou com GitHub indisponível, a aplicação instalada permanece em uso. Para pausar novas verificações, use `sudo systemctl disable --now noha-update.timer`, ou altere `enabled = false` em `/etc/noha/updates.toml`. Se já houver uma atualização em andamento, deixe-a concluir; a próxima tentativa será desativada.
+Mudanças em pacotes do sistema, no atualizador de boot ou na fiação exigem reexecutar o instalador; gere essas releases com `--requires-installer` para o Pi recusá-las automaticamente.
 
-O bootstrap `/opt/noha/updater.py` e a infraestrutura de boot são atualizados pelo instalador, não pela aplicação. Mudanças em pacotes nativos, formato do atualizador, GPIO físico ou rotas PipeWire exigem reexecutar o instalador. Para sinalizar uma release que exige isso, gere o pacote com `--requires-installer`; o atualizador automático a recusará antes de trocar serviços.
+### Publicar uma versão
 
-### Publicar uma nova versão
+1. Aumente `version` em `pyproject.toml`.
+2. Faça commit e envie a branch; o GitHub Actions roda os testes em Python 3.11 e 3.13.
+3. Crie e envie o tag: `git tag v2.0.0 && git push origin v2.0.0`.
 
-O repositório contém `.github/workflows/release.yml`. Depois de enviar o projeto ao GitHub, o fluxo é:
+O fluxo de release testa, confere o tag, gera `noha-pi.zip` e publica a release. Testes travados falham em minutos, sem segurar a release.
 
-1. Faça as alterações e aumente `version` em `pyproject.toml`, por exemplo de `1.1.0` para `1.1.1`.
-2. Faça commit e envie a branch.
-3. Crie e envie o tag correspondente:
+## Desenvolvimento
 
-```bash
-git tag v1.1.1
-git push origin v1.1.1
-```
-
-O GitHub Actions executa os testes, verifica se o tag coincide com o projeto, gera o ZIP e publica uma release com o pacote e checksum. Os Pis recebem essa versão na próxima verificação, quando estiverem ociosos. Se GitHub Actions estiver desabilitado no repositório, habilite-o antes de enviar o tag.
-
-Para gerar o mesmo pacote manualmente, use `python scripts/build_release.py --tag v1.1.0` (ajuste o tag à versão atual), e anexe `dist/noha-pi.zip` e `dist/noha-pi.zip.sha256` à release correspondente. O SHA-256 para instalação automática é lido dos metadados do asset publicados pelo GitHub; se ainda não estiver disponível, o Pi aguarda uma nova verificação.
-
-## Verificação rápida
-
-No computador de desenvolvimento, testes de lógica sem hardware ou chamadas pagas:
+Testes de lógica, sem hardware nem chamadas pagas:
 
 ```bash
 python -m venv .venv
-# Linux: .venv/bin/python; Windows: .venv\Scripts\python
-.venv/bin/python -m pip install -e .
+.venv/bin/python -m pip install -e .          # Windows: .venv\Scripts\python
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-No Pi, valide uma vez com o hardware definitivo:
+Para ver o painel e o quadro com dados de exemplo, sem Pi:
 
-1. Reinicie sem entrar no desktop. Aguarde o aquecimento do PIR e confirme os serviços ativos.
-2. Entre na sala: deve haver uma saudação, sem repetições enquanto conversa.
-3. Pergunte em português e interrompa uma resposta. A fala deve parar, sem Noha confundir sua própria voz com o visitante.
-4. Fique em silêncio por 60 segundos; confirme o encerramento nos logs. Aguarde o intervalo sem movimento e teste outra chegada.
-5. Desconecte/reconecte USB; confira a recuperação usando os mesmos dispositivos.
-6. Remova a internet e aguarde 90 segundos; configure pelo celular. Teste senha errada, depois correta, e confirme que a rede anterior permanece salva.
-7. Reinicie novamente e confirme conexão e voz sem intervenção.
+```bash
+python scripts/dev_dashboard.py --scenario ok   # conversando | offline | problemas | primeiro-acesso
+```
 
-## Remoção e restauração
+Abra http://localhost:8080 (senha `noha`; no cenário `primeiro-acesso`, `admin`) e http://localhost:8080/kiosk?token=dev para o quadro. O painel é HTML, CSS e módulos JavaScript em `noha/web`, sem etapa de build. Os ajustes vêm do esquema em `noha/settings.py`: um campo novo ali aparece no painel, é validado e gravado no TOML.
+
+### Validação no Pi
+
+1. Reinicie sem entrar no desktop e confira o diagnóstico na página Início.
+2. Passe pela frente do sensor sem parar: não deve haver saudação. Pare na frente: a saudação toca.
+3. Não responda: a visita aparece como "Só passou", sem custo. Responda: a conversa começa sem repetir a saudação.
+4. Interrompa uma resposta: a fala para sem Noha confundir a própria voz com o visitante.
+5. Desconecte e reconecte o USB: o diagnóstico mostra e depois limpa o problema.
+6. Tire a internet, fale com a Noha: ela explica a configuração; siga os passos pelo celular.
+7. Reinicie e confirme que tudo volta sem intervenção.
+
+## Remoção
 
 ```bash
 sudo python3 scripts/uninstall.py
 ```
 
-Remove somente os serviços, launcher, configuração AEC e perfil de hotspot pertencentes ao Noha. Preserva os perfis Wi-Fi de clientes, pacotes compartilhados, código, chave e backups. Desativa lingering somente se ele não estava ativo antes da instalação. Não reativa I²C automaticamente.
+Remove serviços, launcher, AEC, quadro e hotspot do Noha. Preserva redes Wi-Fi, pacotes, código, chave, métricas e backups (`/var/lib/noha/backups`, só root).
 
-Para voltar a uma configuração anterior, pare o serviço, copie o arquivo correspondente de `/var/lib/noha/backups/<data>/` ao local original e reinicie o serviço afetado. Os backups são acessíveis somente por root. Para reinstalar, execute novamente o instalador.
-
-Referências: [OpenAI Realtime](https://developers.openai.com/api/docs/guides/realtime-conversations), [PipeWire echo cancellation](https://pipewire.pages.freedesktop.org/pipewire/page_module_echo_cancel.html), [Raspberry Pi networking](https://www.raspberrypi.com/documentation/computers/configuration.html).
+Referências: [OpenAI Realtime](https://developers.openai.com/api/docs/guides/realtime-conversations), [OpenAI text-to-speech](https://developers.openai.com/api/docs/guides/text-to-speech), [PipeWire echo cancellation](https://pipewire.pages.freedesktop.org/pipewire/page_module_echo_cancel.html), [Raspberry Pi networking](https://www.raspberrypi.com/documentation/computers/configuration.html).

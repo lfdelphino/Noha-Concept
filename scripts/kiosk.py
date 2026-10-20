@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Open the dashboard full screen and logged in on the Pi's own display at boot. Run with sudo."""
+"""Show the read-only status board full screen on the Pi's own display at boot. Run with sudo."""
 import argparse
 import os
 from pathlib import Path
@@ -12,8 +12,8 @@ TOKEN = Path("/etc/noha/kiosk-token")
 LAUNCHER = Path("/usr/local/bin/noha-kiosk")
 # Waits for the portal, then opens /kiosk, which only answers browsers on the Pi itself.
 SCRIPT = r'''#!/bin/sh
-# Noha local dashboard (installed by scripts/kiosk.py).
-for _ in $(seq 90); do curl -fs -o /dev/null http://localhost/dashboard.css && break; sleep 2; done
+# Noha status board (installed by scripts/kiosk.py).
+for _ in $(seq 90); do curl -fs -o /dev/null http://localhost/board && break; sleep 2; done
 token=$(cat /etc/noha/kiosk-token) || exit 1
 browser=$(command -v chromium || command -v chromium-browser) || exit 1
 # Size the page like a 1080p screen: a 4K TV at 100% scale would show it at phone size.
@@ -27,7 +27,7 @@ exec "$browser" --kiosk --noerrdialogs --disable-infobars --no-first-run --passw
 ENTRY = """[Desktop Entry]
 Type=Application
 Name=Noha painel
-Comment=Painel da Noha em tela cheia
+Comment=Painel do robô em tela cheia
 Exec={exec}
 X-GNOME-Autostart-enabled=true
 """
@@ -70,7 +70,7 @@ def remove(user):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--user", default=os.environ.get("SUDO_USER"), help="Conta do desktop")
-    parser.add_argument("--remove", action="store_true", help="Desativa o painel local")
+    parser.add_argument("--remove", action="store_true", help="Desativa o painel na tela do Pi")
     args = parser.parse_args()
     if os.geteuid() != 0 or not args.user:
         sys.exit("Execute com sudo python3 scripts/kiosk.py --user <conta do desktop>")

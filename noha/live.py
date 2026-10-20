@@ -44,7 +44,9 @@ class LivePlayback:
 
 
 async def conversation(config, key, instructions, audio, greet=True, state_callback=lambda _: None,
-                       greeting=None, preroll=None):
+                       greeting=None, preroll=None, stats=None):
+    stats = stats if stats is not None else {}
+    stats.setdefault("replies", 0)
     from websockets.asyncio.client import connect
     async with connect("wss://api.openai.com/v1/live/sessions", additional_headers={"Authorization": f"Bearer {key}"},
                        open_timeout=20, close_timeout=3, ping_interval=20, ping_timeout=20,
@@ -82,11 +84,14 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
                     raise APIProblem(safe_code((event.get("error") or {}).get("code")))
                 else:
                     playback.event(event)
+                    if playback.heard and not stats["replies"]:
+                        stats["replies"] = 1  # GPT-Live has no turn events; any visitor speech counts
             if not closed.is_set():
                 raise ConnectionError("GPT-Live desconectado")
 
         async def capture():
-            await asyncio.wait_for(ready.wait(), 30)
+            async with asyncio.timeout(30):  # not wait_for: on Python 3.11 it can swallow the cancellation
+                await ready.wait()
             audio.start_capture()
             pending = preroll.take() if preroll else b""
             while True:
@@ -100,7 +105,8 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
 
         async def watchdog():
             nonlocal closing
-            await asyncio.wait_for(ready.wait(), 30)
+            async with asyncio.timeout(30):
+                await ready.wait()
             last_check = 0
             limit = None
             while True:
@@ -120,7 +126,8 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
                         log.warning("Conversa encerrada pelo limite %s", limit)
                     closing = True
                     await send({"type": "session.close"})
-                    await asyncio.wait_for(closed.wait(), 15)
+                    async with asyncio.timeout(15):
+                        await closed.wait()
                     return
                 await asyncio.sleep(0.1)
 
