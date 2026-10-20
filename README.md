@@ -84,8 +84,8 @@ Digite a nova senha e confirme; Enter nas duas perguntas restaura `admin`. A sen
 
 O painel foi desenhado primeiro para celular, com quatro áreas:
 
-- **Visão geral:** estado da voz, modelo ativo e gasto estimado do dia; sensor de movimento ao vivo (detecção agora, último movimento, aquecendo/rearmando/pronto e as detecções dos últimos 10 minutos); conexão, prontidão de áudio, CPU, temperatura, memória, disco e os dois endereços do painel.
-- **Atividade:** conversas, duração, tokens informados pelo modelo, erros e reconexões, hoje/7/30 dias e por modelo. O custo é estimado pelos preços publicados da OpenAI. O histórico numérico persiste por 90 dias em `/var/lib/noha-metrics`, sem áudio ou transcrições. Hoje segue o fuso do Pi. Contadores não fornecidos, como tokens de voz do GPT-Live, aparecem como indisponíveis.
+- **Visão geral:** estado da voz, modelo ativo e gasto estimado do dia; sensor de movimento ao vivo (detecção agora, último movimento, aquecendo/rearmando/confirmando/pronto e as detecções dos últimos 10 minutos) com o botão para ligar ou desligar as saudações por movimento; conexão, prontidão de áudio, CPU, temperatura, memória, disco e os dois endereços do painel.
+- **Atividade:** conversas, saudações locais (sem custo), duração, tokens informados pelo modelo, erros e reconexões, hoje/7/30 dias e por modelo. O custo é estimado pelos preços publicados da OpenAI. O histórico numérico persiste por 90 dias em `/var/lib/noha-metrics`, sem áudio ou transcrições. Hoje segue o fuso do Pi. Contadores não fornecidos, como tokens de voz do GPT-Live, aparecem como indisponíveis.
 - **Ajustes:** instruções do agente, modelo, voz compatível, GPIO BCM com pino físico, microfone, alto-falante e modo de cancelamento de eco, substituição da chave OpenAI, senha e configurações ngrok. Campos de chave vazios mantêm a credencial existente; valores salvos não são devolvidos ao navegador.
 - **Sistema:** até 100 eventos recentes com filtros e acompanhamento ao vivo; versões instalada/disponível, última verificação, estado e botões para verificar/instalar atualizações.
 
@@ -136,12 +136,26 @@ sudo bash scripts/install.sh --user "$USER"
 
 Comece com o temporizador do HC-SR501 baixo e sensibilidade moderada. Há 60 segundos de estabilização antes do primeiro disparo. O PIR detecta mudança de movimento/calor, não identifica pessoas nem confirma que alguém saiu.
 
+Quem só passa gera uma detecção curta. Por isso Noha cumprimenta apenas depois de `confirm_seconds` (6 s) de movimento contínuo ou de `confirm_pulses` (2) detecções em `confirm_window_seconds` (20 s), na seção `[motion]`; `confirm_pulses = 1` volta a cumprimentar na primeira detecção. Para o HC-SR501:
+
+- Jumper em **H** (redisparo): a saída fica alta enquanto houver movimento, o que alimenta a regra de movimento contínuo.
+- Temporizador (Tx) no mínimo, cerca de 3 s, e `confirm_seconds` acima desse tempo; senão uma única passagem já parece movimento contínuo.
+- Sensibilidade (Sx) reduzida e o sensor apontado para onde o visitante para, não para o corredor. Tapar parte da lente com fita estreita o cone.
+- Acompanhe o efeito no painel: a linha do tempo de detecções continua ativa mesmo com as saudações desligadas.
+
+Um radar mmWave LD2410 também funciona neste GPIO (saída OUT de 3,3 V) e detecta pessoas paradas, com alcance configurável; é a melhor troca para ignorar quem passa longe. O HC-SR04 é um medidor ultrassônico de distância (pinos TRIG/ECHO), não um sensor de presença, e não é compatível sem outro código.
+
 ## Conversa e áudio
 
-- Movimento inicia uma sessão e uma saudação curta em português brasileiro.
+- Movimento confirmado toca uma saudação curta em português brasileiro **gravada localmente**, sem chamar a API. As saudações (seção `[greeting]`) são sintetizadas uma vez com `gpt-4o-mini-tts` na mesma voz e ficam em `~/.cache/noha/greetings`; trocar voz, textos ou estilo gera novas. Até estarem prontas, ou com `local = false`, o modelo de voz cumprimenta como antes.
+- Depois da saudação, Noha escuta localmente por `unanswered_seconds` (10 s). Só quando alguém fala a sessão Realtime é aberta, com o início da fala preservado e o aviso de que o visitante já foi cumprimentado. Sem resposta, nada é cobrado. O log mostra o piso e o pico de ruído (`piso_dbfs`, `pico_dbfs`) para ajustar `speech_margin_db`.
+- Uma sessão que ainda não ouviu o visitante também fecha após `unanswered_seconds`, em vez de `idle_seconds`.
+- **Sem internet**, quando alguém fala depois da saudação, Noha explica em português como configurá-la pelo celular: a rede `Noha-Setup-XXXX` deste Pi, soletrada, e o endereço do portal. A explicação é sintetizada na voz da Noha junto com as saudações; antes disso (primeiro boot sem internet ou sem chave), usa a voz offline do `espeak-ng`, instalada pelo instalador. Robôs atualizados automaticamente sem reexecutar o instalador ficam sem essa reserva até `sudo apt install espeak-ng`.
+- A voz padrão é `alloy`, a mais neutra. Instalações existentes mantêm a voz salva; troque em **Ajustes**.
+- O botão **Saudar por movimento** no painel, ou `sudo noha sensor on|off`, desliga as saudações sem parar o serviço, inclusive após reiniciar. `noha trigger` continua funcionando.
 - Noha segue o idioma do visitante, responde em poucas frases e mantém os fatos da personalidade.
 - Pode ouvir durante a fala. Quando o visitante interrompe, esvazia os buffers de reprodução e informa à API quanto do áudio foi realmente reproduzido, usando uma estimativa conservadora do relógio de áudio.
-- Fecha a sessão após 60 segundos sem fala do visitante, depois de concluir a resposta em andamento. A câmera nunca é utilizada.
+- Fecha a sessão após `idle_seconds` (30 s) sem fala do visitante, depois de concluir a resposta em andamento. A câmera nunca é utilizada.
 - Para outra saudação, exige 30 segundos contínuos sem movimento e 120 segundos desde a saudação anterior. Movimento durante a conversa não inicia outra sessão.
 - Áudio não é enviado enquanto o robô está ocioso. Gravações e transcrições não são persistidas; o histórico da sessão fica na API durante a conexão e não é reconstruído após uma queda.
 - Falhas temporárias têm até cinco tentativas com espera crescente. Chave inválida, falta de saldo e falta de permissão são tratadas como erros da API, sem ativar o hotspot.
@@ -157,7 +171,7 @@ O cancelamento de eco depende do ambiente, volume e posicionamento. Mantenha mic
 
 ## Configuração Wi-Fi pelo celular
 
-Após 90 segundos sem internet, conecte o celular à rede **aberta** `Noha-Setup-XXXX`. O sufixo é específico do Pi. O sistema pode abrir a página automaticamente; se não abrir, use **http://192.168.50.1**. Confirme no celular que deseja permanecer conectado a uma rede sem internet.
+Após 90 segundos sem internet, conecte o celular à rede **aberta** `Noha-Setup-XXXX`. Basta falar com a Noha para ouvir estes passos. O sufixo é específico do Pi. O sistema pode abrir a página automaticamente; se não abrir, use **http://192.168.50.1**. Confirme no celular que deseja permanecer conectado a uma rede sem internet.
 
 Escolha uma rede da lista ou digite o SSID, marque se ela é oculta, selecione a segurança e informe a senha. Suporta redes abertas, WPA/WPA2 Personal e WPA3 Personal. Redes corporativas 802.1X, WEP e login em portais de hotéis não fazem parte desta versão.
 
@@ -177,6 +191,7 @@ As verificações de internet exigem HTTP 204 via HTTPS nos endereços em `netwo
 | `/etc/noha/personality.txt` | Personalidade e informações da Noha Concept |
 | `/etc/noha/secrets.env` | `OPENAI_API_KEY=...`, somente root e grupo `noha` |
 | `/etc/noha/dashboard-password.json` | Hash da senha e revisão para invalidar sessões |
+| `/etc/noha/presence.json` | Saudações por movimento ligadas ou desligadas (painel ou `sudo noha sensor`) |
 | `/etc/noha/ngrok.json`, `/etc/noha/ngrok.yml` | Authtoken e configuração gerada ngrok; acesso restrito |
 | `/var/lib/noha-metrics/usage.sqlite3` | Métricas numéricas persistentes |
 | `/opt/noha/current` | Link atômico para a versão ativa e seu ambiente Python |

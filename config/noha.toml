@@ -1,9 +1,10 @@
 # Installed as /etc/noha/noha.toml. Secrets belong in /etc/noha/secrets.env.
 [voice]
 model = "gpt-realtime-2.1-mini" # cheapest Realtime model; see models.py for prices
-voice = "marin"
+voice = "alloy" # neutral, the least human-sounding voice; changeable in the dashboard
 instructions = "/etc/noha/personality.txt"
 idle_seconds = 30 # since the last accepted visitor turn or Noha's last word
+unanswered_seconds = 10 # greeting nobody answers: listen this long, then give up (passer-by)
 max_session_seconds = 180 # hard limit per visit, whatever the microphone hears
 min_speech_ms = 700 # shorter detections are noise: no reply, removed from the context
 context_tokens = 4000 # conversation kept after the instructions; every reply re-bills it as input
@@ -17,6 +18,12 @@ gpio = 3 # BCM numbering: physical pin 5
 warmup_seconds = 60
 rearm_seconds = 30
 greeting_cooldown_seconds = 120
+# A passer-by makes one short detection. Greet only after confirm_seconds of continuous motion
+# or confirm_pulses separate detections within confirm_window_seconds (1 = greet at once).
+# With the HC-SR501 keep confirm_seconds above its hold time (time pot) and use the H jumper.
+confirm_seconds = 6
+confirm_pulses = 2
+confirm_window_seconds = 20
 
 [audio]
 # Installer replaces these with stable PipeWire node.name values.
@@ -28,6 +35,14 @@ playback_latency_ms = 80
 # auto: XVF3800 hardware AEC when the speaker is the array's own jack/JST output,
 # PipeWire WebRTC AEC for any other speaker (HDMI, Pi jack, USB). Or force pipewire / xvf3800.
 echo_cancel = "auto" # conservative estimate used for interrupted-history truncation
+
+[greeting]
+# Greetings are synthesized once (gpt-4o-mini-tts, same voice) and played locally: motion never
+# costs a Realtime reply. A session opens only when someone speaks after the greeting.
+local = true # false: the voice model generates every greeting, as before
+speech_margin_db = 12 # local speech detection above the room noise; lower if Noha misses replies
+# texts = ["Olá! Eu sou Noha...", "..."] # defaults: four Portuguese variants in noha/config.py
+# style = "Anfitrião simpático..." # delivery instructions for the synthesized greetings
 
 [leds]
 # reSpeaker XVF3800 status ring; failures never interrupt the voice.

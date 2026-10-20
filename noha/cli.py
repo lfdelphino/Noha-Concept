@@ -89,6 +89,8 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run")
     run.add_argument("--simulate-motion", action="store_true")
+    sensor = sub.add_parser("sensor", help="liga ou desliga as saudações por movimento")
+    sensor.add_argument("state", choices=("on", "off", "status"), nargs="?", default="status")
     for name in ("doctor", "audio-list", "status", "trigger", "network", "portal", "web", "admin", "dashboard-password", "ngrok"):
         sub.add_parser(name)
     args = parser.parse_args()
@@ -105,6 +107,15 @@ def main():
             raise SystemExit("As senhas não coincidem")
         atomic_write(ETC / "dashboard-password.json", password_record(password), backup=True)
         print("Senha alterada. Todos os acessos anteriores foram encerrados.")
+        return
+    if args.command == "sensor":
+        from .config import PRESENCE, presence_enabled
+        if args.state != "status":
+            if os.geteuid() != 0:
+                raise SystemExit("Execute sudo noha sensor on|off")
+            from .admin import set_presence
+            set_presence(args.state == "on")
+        print("Saudações por movimento: " + ("ligadas" if presence_enabled(PRESENCE) else "desligadas"))
         return
     if args.command == "admin":
         from .admin import serve

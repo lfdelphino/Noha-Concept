@@ -8,24 +8,26 @@ from uuid import uuid4
 
 from .metrics import record
 from .models import model_info
-from .realtime import ECHO_TAIL_MS, GREETING, APIProblem, safe_code, session_limit
+from .realtime import ECHO_TAIL_MS, GREETING, APIProblem, greeted, idle_limit, safe_code, session_limit
 
 log = logging.getLogger(__name__)
 
 
-def start_event(config, instructions, greet):
+def start_event(config, instructions, greet, greeting=None):
+    context = GREETING if greet else greeted(greeting) if greeting else None
     return {"type": "session.start", "session": {
         "model": config.model, "instructions": instructions + "\nNão há ferramentas ou serviços de consulta disponíveis. "
         "Responda com os fatos fornecidos e reconheça quando não souber.",
         "audio": {"format": {"type": "audio/pcm", "rate": 24000}, "output": {"voice": config.voice}},
         "store": False, "delegation": {"type": "client"},
-        "input": [{"type": "message", "role": "developer", "content": [{"type": "input_text", "text": GREETING}]}] if greet else []}}
+        "input": [{"type": "message", "role": "developer", "content": [{"type": "input_text", "text": context}]}] if context else []}}
 
 
 class LivePlayback:
     def __init__(self, audio):
         self.audio = audio
         self.last_user = time.monotonic()
+        self.heard = False  # any visitor speech since the session started
 
     def event(self, event):
         kind = event.get("type")
@@ -34,13 +36,15 @@ class LivePlayback:
         elif kind == "session.input_transcript.delta":
             # Use text only as a speech signal; never retain or log its content.
             if event.get("delta"):
+                self.heard = True
                 new_speech = time.monotonic() - self.last_user > 1
                 self.last_user = time.monotonic()
                 if new_speech:
                     self.audio.flush()
 
 
-async def conversation(config, key, instructions, audio, greet=True, state_callback=lambda _: None):
+async def conversation(config, key, instructions, audio, greet=True, state_callback=lambda _: None,
+                       greeting=None, preroll=None):
     from websockets.asyncio.client import connect
     async with connect("wss://api.openai.com/v1/live/sessions", additional_headers={"Authorization": f"Bearer {key}"},
                        open_timeout=20, close_timeout=3, ping_interval=20, ping_timeout=20,
@@ -54,7 +58,7 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
         async def send(event):
             await ws.send(json.dumps(event))
 
-        await send(start_event(config, instructions, greet))
+        await send(start_event(config, instructions, greet, greeting))
 
         async def receive():
             async for raw in ws:
@@ -84,7 +88,7 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
         async def capture():
             await asyncio.wait_for(ready.wait(), 30)
             audio.start_capture()
-            pending = b""
+            pending = preroll.take() if preroll else b""
             while True:
                 data = pending + await audio.input.get()
                 end = len(data) - len(data) % 2
@@ -111,7 +115,7 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
                     last_check = now
                 if audio.busy():
                     playback.last_user = now  # idle counts from Noha's last word
-                if not audio.busy() and (now - playback.last_user >= config.idle_seconds or limit):
+                if not audio.busy() and (now - playback.last_user >= idle_limit(config, playback.heard) or limit):
                     if limit:
                         log.warning("Conversa encerrada pelo limite %s", limit)
                     closing = True

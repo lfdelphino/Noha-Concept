@@ -105,7 +105,7 @@ def main():
         "python3-gpiozero", "python3-lgpio", "python3-usb", "gir1.2-gstreamer-1.0", "gstreamer1.0-tools",
         "gstreamer1.0-plugins-base", "gstreamer1.0-plugins-good", "pipewire", "pipewire-pulse",
         "wireplumber", "libspa-0.2-modules", "dnsmasq-base", "network-manager", "nftables", "iw",
-        "avahi-daemon", "avahi-utils", "libnss-mdns", "ca-certificates", "gnupg")
+        "avahi-daemon", "avahi-utils", "libnss-mdns", "ca-certificates", "gnupg", "espeak-ng")
     if not shutil.which("ngrok"):
         # Install through ngrok's signed apt repository; never pipe a remote shell script.
         key = urllib.request.urlopen("https://ngrok-agent.s3.amazonaws.com/ngrok.asc", timeout=30).read()

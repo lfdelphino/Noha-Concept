@@ -28,7 +28,7 @@ PATTERNS = {
 def pattern_for(state, speaking=False, warming=False, updating=False):
     if updating:
         return "updating"
-    if state == "conversando":
+    if state in ("conversando", "cumprimentando", "orientando_wifi"):
         return "speaking" if speaking else "listening"
     if state in ("conectando", "recuperando_audio_ou_conexao"):
         return "connecting"

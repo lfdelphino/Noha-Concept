@@ -15,7 +15,7 @@ import tomllib
 from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 
 from .audio import ECHO_CONFIG, echo_cancel_config, parse_nodes
-from .config import Config
+from .config import Config, presence_enabled
 from .metrics import summary
 from .models import GPIO_PINS, catalog, model_info
 from .network import split_nm
@@ -206,6 +206,15 @@ async def validate_gpio(pin):
             raise ValueError(f"Não foi possível abrir o GPIO BCM{pin}; confira se outro programa usa o pino") from None
 
 
+def set_presence(enabled):
+    """Motion greetings on/off, read by the voice service within a second; survives reboots."""
+    if type(enabled) is not bool:
+        raise ValueError("Informe ligado ou desligado")
+    atomic_write(ETC / "presence.json", {"enabled": enabled}, mode=0o644)
+    return {"accepted": True, "enabled": enabled,
+            "message": "Saudações por movimento ligadas" if enabled else "Saudações por movimento desligadas"}
+
+
 def redact(message):
     for value in (secret_key(), read_json(ETC / "ngrok.json").get("authtoken", "")):
         if value:
@@ -267,6 +276,7 @@ class Admin:
                 "ngrok": tunnel, "local_url": f"http://{socket.gethostname()}.local",
                 "pending": bool(pending), "apply": read_json(STATE / "config-result.json"),
                 "updates": read_json(STATE / "update-status.json"),
+                "presence": presence_enabled(ETC / "presence.json"),
                 "auth_revision": read_json(ETC / "dashboard-password.json").get("revision")}
 
     async def logs(self, data):
@@ -484,6 +494,8 @@ class Admin:
                 result = await self.save_settings(data)
             elif operation == "ngrok" and request.method == "POST":
                 result = await self.save_ngrok(data)
+            elif operation == "presence" and request.method == "POST":
+                result = set_presence(data.get("enabled"))
             elif operation == "usage" and request.method == "GET":
                 days = int(data.get("days", 1))
                 if days not in {1, 7, 30}:

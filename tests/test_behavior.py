@@ -14,7 +14,7 @@ from noha.state import ConversationState, MotionGate, MotionLog
 
 class MotionTests(unittest.TestCase):
     def test_warmup_single_greeting_and_rearm(self):
-        gate = MotionGate(0)
+        gate = MotionGate(0, pulses=1)  # greet on the first detection
         self.assertFalse(gate.update(59, True))
         self.assertTrue(gate.update(60, True))
         self.assertFalse(gate.update(100, True, busy=True))
@@ -25,7 +25,7 @@ class MotionTests(unittest.TestCase):
         self.assertTrue(gate.update(183, True))
 
     def test_dashboard_sensor_readiness_and_timeline(self):
-        gate = MotionGate(0)
+        gate = MotionGate(0, pulses=1)
         self.assertEqual(gate.readiness(20), ("aquecendo", 40))
         self.assertEqual(gate.readiness(60), ("pronto", 0))
         self.assertTrue(gate.update(60, True))
@@ -39,6 +39,29 @@ class MotionTests(unittest.TestCase):
         self.assertEqual((log.snapshot(), log.last), ([[1000, 1005]], 1001))
         log.update(1700, True)
         self.assertEqual(log.snapshot(), [[1700, None]])  # older intervals leave the 10 minute window
+
+    def test_passer_by_is_ignored_and_a_visitor_is_confirmed(self):
+        gate = MotionGate(0, confirm=6, pulses=2, window=20)
+        self.assertFalse(gate.update(100, True))  # someone walks past: one short detection
+        self.assertEqual(gate.readiness(101), ("confirmando", 5))
+        gate.update(103, False)
+        self.assertFalse(gate.update(124, True))  # outside the window: a new passer-by, not a second pulse
+        gate.update(126, False)
+        self.assertTrue(gate.update(130, True))  # second detection within 20 s: someone is here
+        gate = MotionGate(0, confirm=6, pulses=2)
+        self.assertFalse(gate.update(100, True))
+        self.assertFalse(gate.update(105, True))
+        self.assertTrue(gate.update(106, True))  # continuous motion for confirm seconds
+        gate = MotionGate(0, confirm=6, pulses=2)
+        gate.update(55, True)  # motion during warmup is not a detection by itself,
+        self.assertFalse(gate.update(60, True))
+        self.assertTrue(gate.update(61, True))  # but its duration counts once warm
+
+    def test_switched_off_sensor_never_greets(self):
+        gate = MotionGate(0, pulses=1)
+        self.assertFalse(gate.update(100, True, busy=True))  # the app passes busy while switched off
+        gate.update(101, False)
+        self.assertTrue(gate.update(102, True))
 
     def test_idle_counts_from_noha_last_word_not_from_noise(self):
         state = ConversationState(10)
@@ -375,3 +398,227 @@ class RealtimeSessionTests(unittest.IsolatedAsyncioTestCase):
     async def test_xvf3800_speaker_keeps_barge_in(self):
         sent = await self.run_session(EchoCancelTests.XVF_OUT, [])
         self.assertTrue(sent[0]["session"]["audio"]["input"]["turn_detection"]["interrupt_response"])
+
+    async def test_answered_local_greeting_sends_context_and_speech_but_no_greeting_reply(self):
+        from types import SimpleNamespace
+        from noha.config import Audio, Voice
+        from noha.realtime import conversation
+        audio = SimpleNamespace(config=Audio(microphone=self.MIC, speaker=EchoCancelTests.HDMI), input=asyncio.Queue(),
+                                start_capture=lambda: None, check=lambda: None, flush=lambda: None,
+                                busy=lambda tail_ms=0: False, played_ms=lambda: 0, begin_item=lambda: None)
+        socket = FakeSocket([{"type": "session.updated"},
+                             {"type": "error", "error": {"code": "invalid_value", "event_id": "noha_greeting"}}])
+        with patch("websockets.asyncio.client.connect", lambda *a, **k: socket), \
+             patch("noha.realtime.spent_today", return_value=0), patch("noha.realtime.record"), \
+             patch("noha.audio.devices", return_value=[{"name": n} for n in audio.config.required()]):
+            with self.assertRaises(ConnectionError):  # the context error was tolerated
+                await conversation(Voice(), "key", "Instruções", audio, greet=False, greeting="Olá, sou Noha.",
+                                   preroll=SimpleNamespace(take=lambda: b"visitor"))
+        sent = socket.sent
+        context = sent[1]
+        self.assertEqual((context["type"], context["item"]["role"]), ("conversation.item.create", "system"))
+        self.assertIn("Olá, sou Noha.", context["item"]["content"][0]["text"])
+        self.assertFalse(any(e["type"] == "response.create" for e in sent))
+        appended = [e for e in sent if e["type"] == "input_audio_buffer.append"]
+        self.assertEqual(base64.b64decode(appended[0]["audio"]), b"visitor")
+
+    def test_unanswered_sessions_close_sooner(self):
+        from noha.config import Voice
+        from noha.live import start_event
+        from noha.realtime import idle_limit
+        self.assertEqual(idle_limit(Voice(), 0), 10)
+        self.assertEqual(idle_limit(Voice(), 1), 30)
+        self.assertEqual(idle_limit(Voice(idle_seconds=5), 0), 5)
+        event = start_event(Voice(model="gpt-live-1"), "Instruções", False, "Olá, sou Noha.")
+        self.assertIn("Olá, sou Noha.", event["session"]["input"][0]["content"][0]["text"])
+        self.assertEqual(start_event(Voice(model="gpt-live-1"), "Instruções", False)["session"]["input"], [])
+
+
+def tone(ms, amplitude):
+    import math
+    from array import array
+    return array("h", (int(amplitude * math.sin(i / 3)) for i in range(24 * ms))).tobytes()
+
+
+class LocalGreetingTests(unittest.IsolatedAsyncioTestCase):
+    def test_speech_detector_needs_sustained_level_above_the_room(self):
+        from noha.greeting import SpeechDetector
+        detector = SpeechDetector(margin_db=12)
+        for _ in range(15):
+            detector.calibrate(tone(20, 100))  # quiet room, about -50 dBFS
+        self.assertFalse(any(detector.feed(tone(20, 100)) for _ in range(100)))  # steady noise
+        self.assertFalse(detector.feed(tone(100, 8000)))  # a door: loud but short
+        self.assertFalse(any(detector.feed(tone(20, 100)) for _ in range(20)))
+        results = [detector.feed(tone(20, 3000)) for _ in range(20)]
+        self.assertFalse(results[13])
+        self.assertTrue(results[14])  # 300 ms of voice
+
+    def test_detector_follows_a_noisy_room(self):
+        from noha.greeting import SpeechDetector
+        detector = SpeechDetector(margin_db=12)
+        detector.calibrate(tone(20, 100))
+        # A TV starts: louder than the calibration but steady, so the floor rises with it.
+        early = [detector.feed(tone(20, 1500)) for _ in range(500)]
+        self.assertTrue(any(early[:50]))
+        detector.voiced = 0
+        self.assertFalse(any(detector.feed(tone(20, 1500)) for _ in range(100)))
+
+    async def run_greeting(self, chunks, seconds=3):
+        from types import SimpleNamespace
+        from noha.greeting import SpeechDetector, greet_and_listen
+        pushed = []
+        audio = SimpleNamespace(input=asyncio.Queue(), start_capture=lambda: None, check=lambda: None,
+                                push=pushed.append, busy=lambda tail_ms=0: False)
+        for chunk in chunks:
+            audio.input.put_nowait(chunk)
+        now = [0.0]
+        def clock():
+            now[0] += 0.02
+            return now[0]
+        heard = await greet_and_listen(audio, b"clip", seconds, SpeechDetector(), clock=clock)
+        return pushed, heard
+
+    async def test_greeting_plays_locally_and_returns_the_visitor_speech(self):
+        quiet, voice = tone(20, 100), tone(20, 3000)
+        pushed, heard = await self.run_greeting([quiet] * 30 + [voice] * 15)
+        self.assertEqual(pushed, [b"clip"])  # after measuring the room
+        self.assertEqual(heard[-1], voice)
+        self.assertIn(quiet, heard)  # the onset before the detection is kept for the session
+
+    async def test_unanswered_greeting_ends_without_api(self):
+        pushed, heard = await self.run_greeting([tone(20, 100)] * 300, seconds=2)
+        self.assertEqual(pushed, [b"clip"])
+        self.assertIsNone(heard)
+
+    async def test_preroll_pumps_the_queue_until_the_session_takes_it(self):
+        from types import SimpleNamespace
+        from noha.greeting import Preroll
+        audio = SimpleNamespace(input=asyncio.Queue())
+        preroll = Preroll(audio, [b"ab"])
+        audio.input.put_nowait(b"cd")
+        for _ in range(3):
+            await asyncio.sleep(0)
+        self.assertEqual(preroll.take(), b"abcd")
+        self.assertTrue(audio.input.empty())
+
+    async def test_clips_are_synthesized_once_per_voice_and_text(self):
+        from tempfile import TemporaryDirectory
+        from noha.greeting import prepare
+        requests = []
+        class Response:
+            status = 200
+            async def __aenter__(self): return self
+            async def __aexit__(self, *exc): return False
+            async def read(self): return b"\0\0" * 24000
+        class Session:
+            def post(self, url, json, headers):
+                requests.append(json)
+                return Response()
+        config = Config()
+        config.greeting.texts = ["Olá", "Oi"]
+        with TemporaryDirectory() as folder, patch("noha.greeting.record") as record:
+            folder = Path(folder)
+            (folder / "old.pcm").write_bytes(b"x")
+            clips = await prepare(config, "key", config.greeting.texts, folder, Session())
+            self.assertEqual([text for text, _ in clips], ["Olá", "Oi"])
+            self.assertEqual({r["voice"] for r in requests}, {"alloy"})
+            self.assertEqual(requests[0]["response_format"], "pcm")
+            self.assertFalse((folder / "old.pcm").exists())
+            self.assertAlmostEqual(record.call_args.kwargs["cost_usd"], 0.015 / 60)
+            await prepare(config, "key", config.greeting.texts, folder, Session())
+            self.assertEqual(len(requests), 2)  # cached
+            config.voice.voice = "cedar"  # another voice: new clips, old ones removed
+            await prepare(config, "key", config.greeting.texts, folder, Session())
+            self.assertEqual(len(requests), 4)
+            self.assertEqual(len(list(folder.glob("*.pcm"))), 2)
+
+    async def test_failed_synthesis_reports_only_the_status(self):
+        from tempfile import TemporaryDirectory
+        from noha.greeting import prepare
+        class Response:
+            status = 401
+            async def __aenter__(self): return self
+            async def __aexit__(self, *exc): return False
+        class Session:
+            def post(self, *a, **k): return Response()
+        with TemporaryDirectory() as folder:
+            with self.assertRaisesRegex(RuntimeError, "^http_401$"):
+                await prepare(Config(), "key", ["Olá"], Path(folder), Session())
+
+
+class OfflineSetupTests(unittest.IsolatedAsyncioTestCase):
+    def test_instructions_name_this_pi_hotspot_and_portal(self):
+        from tempfile import TemporaryDirectory
+        from noha.greeting import setup_text
+        from noha.network import hotspot_ssid
+        with TemporaryDirectory() as folder:
+            machine = Path(folder) / "machine-id"
+            machine.write_text("abc\n")
+            ssid = hotspot_ssid(Network(), machine)
+        self.assertRegex(ssid, r"^Noha-Setup-[0-9A-F]{4}$")
+        text = setup_text(Network(), "Noha-Setup-A1B2")
+        self.assertIn("rede Wi-Fi aberta Noha Setup A 1 B 2.", text)  # spelled out for speech
+        self.assertIn("192 ponto 168 ponto 50 ponto 1", text)
+        self.assertIn("Minha Rede", setup_text(Network(), "Minha-Rede"))
+
+    def test_espeak_fallback_becomes_24khz_pcm(self):
+        import wave
+        from noha.greeting import espeak
+        def fake_run(args, **kwargs):
+            self.assertEqual(args[:3], ["espeak-ng", "-v", "pt-br"])
+            with wave.open(args[args.index("-w") + 1], "wb") as clip:
+                clip.setnchannels(1)
+                clip.setsampwidth(2)
+                clip.setframerate(22050)
+                clip.writeframes(b"\x10\x00" * 22050)
+        with patch("noha.greeting.subprocess.run", side_effect=fake_run):
+            pcm = espeak("Olá")
+        self.assertEqual(len(pcm), 2 * 24000)  # one second at the pipeline's rate
+        self.assertEqual(pcm[:2], b"\x10\x00")
+
+    async def test_play_drains_the_microphone_until_the_clip_ends(self):
+        from types import SimpleNamespace
+        from noha.greeting import play
+        remaining = [3]
+        def busy():
+            remaining[0] -= 1
+            return remaining[0] > 0
+        audio = SimpleNamespace(input=asyncio.Queue(), pushed=[], check=lambda: None, busy=busy)
+        audio.push = audio.pushed.append
+        for _ in range(50):
+            audio.input.put_nowait(b"\0\0")
+        await play(audio, b"instructions")
+        self.assertEqual(audio.pushed, [b"instructions"])
+        self.assertTrue(audio.input.empty())
+
+    async def test_without_a_greeting_clip_noha_only_listens(self):
+        from types import SimpleNamespace
+        from noha.greeting import SpeechDetector, greet_and_listen
+        audio = SimpleNamespace(input=asyncio.Queue(), start_capture=lambda: None, check=lambda: None,
+                                push=lambda data: self.fail("nothing to play"), busy=lambda tail_ms=0: False)
+        for chunk in [tone(20, 100)] * 20 + [tone(20, 3000)] * 15:
+            audio.input.put_nowait(chunk)
+        now = [0.0]
+        def clock():
+            now[0] += 0.02
+            return now[0]
+        self.assertIsNotNone(await greet_and_listen(audio, None, 3, SpeechDetector(), clock=clock))
+
+
+class PresenceTests(unittest.TestCase):
+    def test_switch_defaults_on_and_config_is_validated(self):
+        from tempfile import TemporaryDirectory
+        from noha.config import presence_enabled
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "presence.json"
+            self.assertTrue(presence_enabled(path))
+            path.write_text('{"enabled": false}')
+            self.assertFalse(presence_enabled(path))
+            path.write_text("not json")
+            self.assertTrue(presence_enabled(path))
+            config = Path(folder) / "noha.toml"
+            config.write_text("[motion]\nconfirm_pulses = 0\n")
+            with self.assertRaises(ValueError):
+                Config.load(config)
+            config.write_text("[greeting]\ntexts = []\nlocal = false\n")
+            self.assertFalse(Config.load(config).greeting.local)

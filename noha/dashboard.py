@@ -170,7 +170,7 @@ class Dashboard:
                 pass
             return response
         operations = {("GET", "status"), ("GET", "settings"), ("POST", "settings"), ("GET", "usage"),
-                      ("GET", "logs"), ("POST", "ngrok"), ("POST", "password"),
+                      ("GET", "logs"), ("POST", "ngrok"), ("POST", "password"), ("POST", "presence"),
                       ("POST", "check-update"), ("POST", "install-update")}
         operation = path.removeprefix("/api/")
         if not path.startswith("/api/") or (request.method, operation) not in operations:

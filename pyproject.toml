@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "noha-robot"
-version = "1.4.0"
+version = "1.5.0"
 description = "Noha: Raspberry Pi motion-activated Realtime voice host"
 requires-python = ">=3.11"
 dependencies = ["aiohttp>=3.10,<4", "websockets>=14,<16"]

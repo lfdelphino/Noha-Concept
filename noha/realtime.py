@@ -62,6 +62,17 @@ def record_usage(model, usage):
 
 
 GREETING = "Um visitante acabou de ser detectado pelo sensor de movimento. Siga agora a seção INÍCIO DA VISITA."
+
+
+def greeted(text):
+    """Context for a session that starts after the local greeting, when the visitor answered it."""
+    return (f"Você já cumprimentou o visitante em voz alta com esta frase: «{text}». "
+            "Não cumprimente de novo nem repita a apresentação: responda ao que ele disser.")
+
+
+def idle_limit(config, answered):
+    # Before any accepted visitor turn the greeting went unanswered: likely someone just passing by.
+    return config.idle_seconds if answered else min(config.idle_seconds, config.unanswered_seconds)
 ECHO_TAIL_MS = 400  # room reverb after Noha's last sample; still Noha, not the visitor
 
 
@@ -112,7 +123,9 @@ class Playback:
         return event
 
 
-async def conversation(config, key, instructions, audio, greet=True, state_callback=lambda _: None):
+async def conversation(config, key, instructions, audio, greet=True, state_callback=lambda _: None,
+                       greeting=None, preroll=None):
+    """greeting: text Noha already played locally; preroll: the visitor's speech heard meanwhile."""
     from websockets.asyncio.client import connect
     url = "wss://api.openai.com/v1/realtime?" + urlencode({"model": config.model})
     started = time.monotonic()
@@ -151,6 +164,11 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
                 event = json.loads(raw)
                 kind = event.get("type")
                 if kind == "session.updated":
+                    if greeting and not greeting_sent:
+                        greeting_sent = True
+                        await send({"type": "conversation.item.create", "event_id": "noha_greeting", "item": {
+                            "type": "message", "role": "system",
+                            "content": [{"type": "input_text", "text": greeted(greeting)}]}})
                     ready.set()
                     state_callback("conversando")
                     if greet and not greeting_sent:
@@ -204,6 +222,9 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
                     if code in ("conversation_already_has_active_response", "item_delete_invalid_item_id"):
                         log.info("OpenAI code=%s ignorado", code)  # turn raced a reply; harmless
                         continue
+                    if event.get("error", {}).get("event_id") == "noha_greeting":
+                        log.warning("OpenAI code=%s no contexto da saudação; conversa continua", code)
+                        continue
                     raise APIProblem(code)
             raise ConnectionError("Realtime desconectado")
 
@@ -211,6 +232,8 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
             await asyncio.wait_for(ready.wait(), 30)
             # Do not fill the mic queue while DNS/TLS/session negotiation is pending.
             audio.start_capture()
+            if preroll and (heard := preroll.take()):
+                await send({"type": "input_audio_buffer.append", "audio": base64.b64encode(heard).decode("ascii")})
             while True:
                 data = await audio.input.get()
                 if ending or (not barge_in and (state.generating or audio.busy(ECHO_TAIL_MS))):
@@ -234,7 +257,7 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
                         ending_at = now
                     last_check = now
                 talking = state.generating or audio.busy()
-                if state.idle(now, config.idle_seconds, talking):
+                if state.idle(now, idle_limit(config, counts["replies"]), talking):
                     return
                 # A limit lets Noha finish its sentence, but never waits on a stuck reply.
                 if ending and (not talking or now - ending_at > 20):

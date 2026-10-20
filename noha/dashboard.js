@@ -1,8 +1,8 @@
 "use strict";
 const $ = id => document.getElementById(id);
 const state = {csrf: "", tab: "overview", days: 1, stream: null, settings: null, lastStatus: null, dirty: new Set(), authenticated: false};
-const labels = {conversations: "Conversas", duration_seconds: "Tempo de conversa", input_tokens: "Tokens de entrada", output_tokens: "Tokens de saída", cached_tokens: "Tokens em cache", errors: "Erros", reconnects: "Reconexões", cost_usd: "Custo estimado"};
-const names = {online:"Online", configuracao_necessaria:"Configuração necessária", reconectando:"Reconectando", indisponivel:"Indisponível", iniciando:"Iniciando", configuracao:"Configuração Wi-Fi", conversando:"Conversando", aquecendo_sensor:"Aquecendo sensor", aguardando_movimento:"Pronta para receber", conectando:"Conectando", gpio_indisponivel:"Sensor indisponível", recuperando_audio_ou_conexao:"Recuperando conexão", audio_indisponivel:"Áudio indisponível", erro_api:"OpenAI recusou a conversa", sem_conexao:"Sem conexão com a OpenAI", chave_ausente:"Chave OpenAI ausente", orcamento_esgotado:"Limite diário atingido", parado:"Parada", pending:"Aguardando conversa", applied:"Aplicada", error:"Falha", checking:"Verificando", staging:"Preparando versão", waiting:"Aguardando o robô", installing:"Instalando", updated:"Atualizada", current:"Em dia", available:"Atualização disponível", rollback:"Versão anterior restaurada", deferred:"Atualização adiada", offline:"Sem conexão", disabled:"Atualizações desativadas", installer_required:"Reexecute o instalador"};
+const labels = {conversations: "Conversas", greetings: "Saudações locais", duration_seconds: "Tempo de conversa", input_tokens: "Tokens de entrada", output_tokens: "Tokens de saída", cached_tokens: "Tokens em cache", errors: "Erros", reconnects: "Reconexões", cost_usd: "Custo estimado"};
+const names = {online:"Online", configuracao_necessaria:"Configuração necessária", reconectando:"Reconectando", indisponivel:"Indisponível", iniciando:"Iniciando", configuracao:"Configuração Wi-Fi", conversando:"Conversando", cumprimentando:"Cumprimentando", orientando_wifi:"Explicando o Wi-Fi", sensor_desligado:"Saudações desligadas", aquecendo_sensor:"Aquecendo sensor", aguardando_movimento:"Pronta para receber", conectando:"Conectando", gpio_indisponivel:"Sensor indisponível", recuperando_audio_ou_conexao:"Recuperando conexão", audio_indisponivel:"Áudio indisponível", erro_api:"OpenAI recusou a conversa", sem_conexao:"Sem conexão com a OpenAI", chave_ausente:"Chave OpenAI ausente", orcamento_esgotado:"Limite diário atingido", parado:"Parada", pending:"Aguardando conversa", applied:"Aplicada", error:"Falha", checking:"Verificando", staging:"Preparando versão", waiting:"Aguardando o robô", installing:"Instalando", updated:"Atualizada", current:"Em dia", available:"Atualização disponível", rollback:"Versão anterior restaurada", deferred:"Atualização adiada", offline:"Sem conexão", disabled:"Atualizações desativadas", installer_required:"Reexecute o instalador"};
 const text = (id, value) => { $(id).textContent = value ?? "—"; };
 // Voice states before 1.3.3 carried a hint after ":" (e.g. "erro_api: confira…"); name the prefix.
 const nameOf = value => names[value] || names[value?.split(":")[0]] || (value || "Indisponível").replaceAll("_", " ");
@@ -23,7 +23,7 @@ async function api(path, data) {
 function setLink(id, value, fallback) { text(id, value || fallback); if (value) $(id).href = value; else $(id).removeAttribute("href"); }
 const ago = seconds => seconds < 60 ? `${Math.max(1, Math.round(seconds))} s` : seconds < 3600 ? `${Math.floor(seconds / 60)} min` : `${Math.floor(seconds / 3600)} h`;
 const clock = epoch => new Date(epoch * 1000).toLocaleTimeString("pt-BR");
-const gates = {aquecendo: "Aquecendo", conversando: "Em conversa", rearmando: "Rearmando", pronto: "Pronto para cumprimentar"};
+const gates = {aquecendo: "Aquecendo", conversando: "Em conversa", rearmando: "Rearmando", confirmando: "Confirmando presença", pronto: "Pronto para cumprimentar", desligado: "Desligado"};
 function motionCard(voice) {
   // Positions use the Pi's clock (heartbeat time), not the browser's.
   const now = voice.updated || Date.now() / 1000, span = 600, since = now - span, history = voice.motion_history || [];
@@ -31,7 +31,7 @@ function motionCard(voice) {
   $("motion-dot").classList.toggle("on", !voice.stale && !missing && !!voice.motion);
   text("motion-state", voice.stale ? "Estado desatualizado" : missing ? "Sensor indisponível" : voice.motion ? "Movimento detectado agora" : "Sem movimento");
   text("motion-detail", missing ? `Confira a ligação no GPIO ${voice.gpio ?? "—"}` : voice.last_motion ? `Último movimento há ${ago(now - voice.last_motion)} · ${clock(voice.last_motion)}` : "Nenhum movimento desde que o serviço iniciou");
-  text("gate-badge", voice.stale || !gates[voice.gate] ? "—" : ["aquecendo", "rearmando"].includes(voice.gate) ? `${gates[voice.gate]} · ${voice.gate_seconds} s` : gates[voice.gate]);
+  text("gate-badge", voice.stale || !gates[voice.gate] ? "—" : ["aquecendo", "rearmando"].includes(voice.gate) || (voice.gate === "confirmando" && voice.gate_seconds) ? `${gates[voice.gate]} · ${voice.gate_seconds} s` : gates[voice.gate]);
   const visible = history.filter(([, end]) => (end ?? now) >= since), root = $("motion-timeline");
   root.replaceChildren(...visible.map(([start, end]) => {
     const mark = document.createElement("i"), from = Math.max(start, since), to = end ?? now;
@@ -47,6 +47,7 @@ function updateStatus(status) {
   const voice = status.voice || {}, system = status.system || {}, tunnel = status.ngrok || {}, updates = status.updates || {};
   text("voice-state", voice.stale ? "Estado de voz desatualizado" : nameOf(voice.state));
   motionCard(voice);
+  if (!$("presence").classList.contains("busy")) { const on = status.presence !== false; $("presence").setAttribute("aria-pressed", String(on)); text("presence", on ? "Ligado" : "Desligado"); }
   text("voice-badge", voice.stale ? "Sem sinal" : voice.busy ? "Em conversa" : voice.ready ? "Pronta" : "Atenção");
   text("active-model", [voice.model || status.model, voice.spent_today == null ? "" : `hoje ${usd(voice.spent_today)}${voice.daily_budget ? ` de ${usd(voice.daily_budget)}` : ""}`].filter(Boolean).join(" · "));
   const absent = voice.audio_missing?.length ? `Não encontrado: ${voice.audio_missing.join(", ")}` : "";
@@ -146,6 +147,7 @@ $("voice-form").onsubmit = async event => { event.preventDefault(); await save(e
 $("ngrok-form").onsubmit = async event => { event.preventDefault(); await save(event.currentTarget, "ngrok", {url: $("ngrok-url").value, authtoken: $("ngrok-token").value}, saved => { $("ngrok-token").value = ""; setLink("public-url", saved.url); notice(`ngrok reconectando. Endereço: ${saved.url}`); }); };
 $("password-form").onsubmit = async event => { event.preventDefault(); if ($("new-password").value !== $("confirm-password").value) { const result = event.currentTarget.querySelector(".form-result"); result.textContent = "As senhas não coincidem."; result.classList.add("error"); return; } await save(event.currentTarget, "password", {current: $("current-password").value, password: $("new-password").value}, () => { $("password-form").reset(); loggedOut("Senha alterada. Entre com a nova senha."); }); };
 document.querySelectorAll("[data-days]").forEach(button => button.onclick = async () => { state.days = Number(button.dataset.days); document.querySelectorAll("[data-days]").forEach(b => b.setAttribute("aria-pressed", String(b === button))); try { await usage(); } catch (error) { notice(error.message, true); } });
+$("presence").onclick = async () => { const button = $("presence"), on = button.getAttribute("aria-pressed") !== "true"; button.disabled = true; button.classList.add("busy"); try { const result = await api("presence", {enabled: on}); button.setAttribute("aria-pressed", String(result.enabled)); text("presence", result.enabled ? "Ligado" : "Desligado"); notice(result.message); } catch (error) { notice(error.message, true); } finally { button.disabled = false; button.classList.remove("busy"); } };
 $("refresh-usage").onclick = () => usage().catch(error => notice(error.message, true));
 for (const action of ["check-update", "install-update"]) $(action).onclick = async () => { $(action).disabled = true; try { const result = await api(action, {}); text("update-result", result.message); } catch (error) { text("update-result", error.message); } finally { $(action).disabled = false; } };
 for (const id of ["log-service", "log-level"]) $(id).onchange = () => { $("log-entries").dataset.cursor = ""; connectStream(); };

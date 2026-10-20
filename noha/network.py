@@ -64,6 +64,11 @@ def validate_credentials(data):
             "security": security, "hidden": data.get("hidden", False)}
 
 
+def hotspot_ssid(config, machine_id=Path("/etc/machine-id")):
+    """The setup hotspot's name; the suffix is specific to this Pi."""
+    return config.hotspot_ssid or "Noha-Setup-" + hashlib.sha256(machine_id.read_text().strip().encode()).hexdigest()[:4].upper()
+
+
 class NetworkManager:
     HOTSPOT_ID = "noha-setup"
 
@@ -72,8 +77,7 @@ class NetworkManager:
         self.dns = None
         self.profile_dir = Path("/etc/NetworkManager/system-connections")
         self.hotspot_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, "noha.local.setup"))
-        machine = Path("/etc/machine-id").read_text().strip()
-        self.ssid = config.hotspot_ssid or "Noha-Setup-" + hashlib.sha256(machine.encode()).hexdigest()[:4].upper()
+        self.ssid = hotspot_ssid(config)
 
     async def nm(self, *args, **kwargs):
         return await command("nmcli", "--colors", "no", *args, **kwargs)

@@ -7,7 +7,7 @@ import sqlite3
 import time
 
 log = logging.getLogger(__name__)
-METRICS = ("conversations", "duration_seconds", "input_tokens", "output_tokens", "cached_tokens", "errors", "reconnects",
+METRICS = ("conversations", "greetings", "duration_seconds", "input_tokens", "output_tokens", "cached_tokens", "errors", "reconnects",
            "cost_usd")
 
 

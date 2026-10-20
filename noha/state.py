@@ -1,6 +1,6 @@
 """Hardware-independent conversation lifecycle."""
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -9,26 +9,47 @@ class MotionGate:
     warmup: float = 60
     quiet: float = 30
     cooldown: float = 120
+    # Someone walking past makes one short detection; a visitor keeps moving in front of Noha.
+    # Greet after `confirm` seconds of continuous motion or `pulses` detections within `window`.
+    confirm: float = 6
+    pulses: int = 2
+    window: float = 20
     armed: bool = True
     last_greeting: float = float("-inf")
     low_since: float | None = None
+    high_since: float | None = None
+    counted: bool | None = None
+    edges: deque = field(default_factory=deque)
 
     def update(self, now, detected, busy=False):
         if detected:
             self.low_since = None
-        elif self.low_since is None:
-            self.low_since = now
+            if self.high_since is None:
+                self.high_since = now
+        else:
+            self.high_since = self.counted = None
+            if self.low_since is None:
+                self.low_since = now
+        while self.edges and now - self.edges[0] > self.window:
+            self.edges.popleft()
         if not self.armed and not busy and self.low_since is not None:
             if now - self.low_since >= self.quiet and now - self.last_greeting >= self.cooldown:
                 self.armed = True
+                self.edges.clear()  # detections from the previous visit are not new evidence
         if now - self.boot < self.warmup or busy or not self.armed or not detected:
+            return False
+        if not self.counted:  # each detection counts once, when it can lead to a greeting
+            self.counted = True
+            self.edges.append(now)
+        if len(self.edges) < self.pulses and now - self.high_since < self.confirm:
             return False
         self.armed = False
         self.last_greeting = now
+        self.edges.clear()
         return True
 
     def readiness(self, now, busy=False):
-        """(state, seconds left) for the dashboard: aquecendo, conversando, rearmando or pronto."""
+        """(state, seconds left) for the dashboard: aquecendo, conversando, rearmando, confirmando or pronto."""
         if now - self.boot < self.warmup:
             return "aquecendo", self.warmup - (now - self.boot)
         if busy:
@@ -37,6 +58,9 @@ class MotionGate:
             # Re-arms after `quiet` seconds without motion and `cooldown` since the last greeting.
             quiet = self.quiet - (now - self.low_since) if self.low_since is not None else self.quiet
             return "rearmando", max(0, quiet, self.cooldown - (now - self.last_greeting))
+        if self.edges:
+            left = self.confirm - (now - self.high_since) if self.high_since is not None else self.confirm
+            return "confirmando", max(0, left)
         return "pronto", 0
 
 
