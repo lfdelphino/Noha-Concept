@@ -68,6 +68,15 @@ def profile_missing(config, names):
     return any(n not in names and card_of(n) in names for n in (config.microphone, config.speaker) if n)
 
 
+def xvf3800_full_volume(config, run=subprocess.run):
+    """The XVF3800 has a mono master playback control ('PCM',1) besides the stereo one PipeWire drives;
+    it can sit at -20 dB, a tenth of the signal. Open it fully: the dashboard volume still turns it down."""
+    if "XVF3800" not in config.speaker:
+        return False
+    result = run(["amixer", "-c", "Array", "sset", "PCM,1", "100%", "unmute"], capture_output=True, timeout=5)
+    return result.returncode == 0
+
+
 def echo_cancel_dropped(config, names):
     # PipeWire's echo-cancel module unloads itself when a target is missing (boot order, HDMI
     # display off, USB replug) and never comes back on its own; only a PipeWire restart reloads it.

@@ -721,3 +721,19 @@ class SensorWatchTests(unittest.TestCase):
         self.assertIn("robô: pronto para cumprimentar", text)
         self.assertIn("1 detecção em 6,0 s; movimento em 3,0 s (50% do tempo).", text)
         self.assertIn("███▁", text)  # the strip, newest second on the right
+
+
+class SpeakerVolumeTests(unittest.TestCase):
+    def test_xvf3800_master_control_opens_only_for_its_own_speaker(self):
+        from types import SimpleNamespace
+        from noha.audio import xvf3800_full_volume
+        from noha.config import Audio
+        calls = []
+
+        def run(args, **kwargs):
+            calls.append(args)
+            return SimpleNamespace(returncode=0)
+        self.assertTrue(xvf3800_full_volume(Audio(speaker=EchoCancelTests.XVF_OUT), run=run))
+        self.assertEqual(calls, [["amixer", "-c", "Array", "sset", "PCM,1", "100%", "unmute"]])
+        self.assertFalse(xvf3800_full_volume(Audio(speaker=EchoCancelTests.HDMI), run=run))
+        self.assertEqual(len(calls), 1)  # HDMI or other speakers: their volume stays with the dashboard

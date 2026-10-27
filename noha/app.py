@@ -7,9 +7,10 @@ import os
 from pathlib import Path
 import random
 import shutil
+import subprocess
 import time
 
-from .audio import AudioIO, AudioUnavailable, echo_cancel_dropped, missing, profile_missing
+from .audio import AudioIO, AudioUnavailable, echo_cancel_dropped, missing, profile_missing, xvf3800_full_volume
 from .config import presence_enabled
 from .controller import internet_available
 from .greeting import OFFLINE_GREETING, Preroll, SpeechDetector, espeak, greet_and_listen, play, prepare, setup_text
@@ -227,9 +228,14 @@ class Robot:
         try:
             names = {d["name"] for d in await asyncio.to_thread(devices)}
             self.audio_missing = missing(self.config.audio, names)
-            self.audio_ready = not self.audio_missing
+            was_ready, self.audio_ready = self.audio_ready, not self.audio_missing
             if self.audio_ready:
                 self.aec_backoff = 120
+                if not was_ready:  # at start and after a USB replug, which resets the chip's mixer
+                    try:
+                        await asyncio.to_thread(xvf3800_full_volume, self.config.audio)
+                    except (OSError, subprocess.TimeoutExpired):
+                        log.warning("Volume do XVF3800 não ajustado; o painel controla o restante")
                 if _status.get("state") == "audio_indisponivel":
                     update_status("aguardando_movimento")
             elif self.active is None and now >= self.next_aec_restart:
