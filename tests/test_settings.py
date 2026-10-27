@@ -93,7 +93,7 @@ class ValidationTests(unittest.TestCase):
 
 class DiagnosticsTests(unittest.TestCase):
     def status(self, **overrides):
-        status = {"voice": {"stale": False, "version": "2.0.0", "audio_ready": True, "gpio_ready": True, "gpio": 3,
+        status = {"voice": {"stale": False, "version": "2.0.0", "audio_ready": True, "gpio_ready": True, "gpio": 17,
                             "greeting_local": True, "local_greetings": 4, "setup_ready": True},
                   "network": {"mode": "online", "wifi": "Casa"}, "key_configured": True, "presence": True,
                   "budget": {"limit": 2.0, "spent": 0.5}, "security": {"default_password": False},
@@ -128,9 +128,12 @@ class DiagnosticsTests(unittest.TestCase):
         sensor = {i["id"]: i for i in diagnostics.checks(self.status(voice=held))}["sensor"]
         self.assertEqual(sensor["level"], "warn")
         self.assertIn("12 min", sensor["detail"])
-        self.assertIn("GPIO 4 (pino 7)", sensor["detail"])  # GPIO 3 has the board's I2C pull-up
         visitor = {"motion": True, "updated": 10_000, "motion_history": [[10_000 - 90, None]]}
         self.assertEqual(self.levels(self.status(voice=visitor))["sensor"], "ok")
+        # GPIO 3 is held high by the board's I2C pull-up: always an error, naming the pin to use instead.
+        pulled = {i["id"]: i for i in diagnostics.checks(self.status(voice={"gpio": 3}))}["sensor"]
+        self.assertEqual(pulled["level"], "error")
+        self.assertIn("GPIO 17 (pino 11)", pulled["detail"])
 
     def test_stale_voice_service_hides_hardware_guesses(self):
         levels = self.levels(self.status(voice={"stale": True}))

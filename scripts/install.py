@@ -91,7 +91,10 @@ def main():
     os.umask(0o022)
     config_path = ETC / "noha.toml"
     existing = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
-    configured_gpio = existing.get("motion", {}).get("gpio", 3)
+    configured_gpio = existing.get("motion", {}).get("gpio", 17)
+    if configured_gpio in (2, 3):
+        print(f"Aviso: GPIO{configured_gpio} tem resistor pull-up na placa e sempre indica movimento. "
+              "Ligue o OUT do sensor no GPIO 17 (pino 11) e escolha GPIO 17 nos ajustes.")
     pin = run("pinctrl", "get", str(configured_gpio), capture=True).stdout
     if "SCL" in pin or "SDA" in pin:
         if args.disable_i2c:

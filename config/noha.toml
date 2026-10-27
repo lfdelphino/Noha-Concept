@@ -15,7 +15,7 @@ eagerness = "medium"
 max_output_tokens = 300
 
 [motion]
-gpio = 3 # BCM numbering: physical pin 5
+gpio = 17 # BCM numbering: physical pin 11. Never 2 or 3: their board pull-ups read as motion
 warmup_seconds = 60
 rearm_seconds = 30
 greeting_cooldown_seconds = 120

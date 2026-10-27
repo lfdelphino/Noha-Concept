@@ -26,6 +26,7 @@ def rp1_chip(dev=Path("/dev")):
 def open_sensor(pin):
     from gpiozero import DigitalInputDevice
     from gpiozero.pins.lgpio import LGPIOFactory
-    # GPIO3 has a physical pull-up. PIR actively drives high and low.
-    return DigitalInputDevice(pin, pull_up=None, active_state=True,
+    # Internal pull-down: an unplugged sensor reads "no motion" instead of floating. GPIO 2/3 cannot be
+    # used: the board's 1.8 kΩ I2C pull-ups hold them high even against an HC-SR501 pulling low.
+    return DigitalInputDevice(pin, pull_up=False,
                               pin_factory=LGPIOFactory(chip=rp1_chip()))

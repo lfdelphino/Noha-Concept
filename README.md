@@ -89,9 +89,9 @@ Desligue a alimentação para conectar. Confira os pinos pelas inscrições do m
 |---|---|
 | VCC | 5 V, pino físico 2 ou 4 |
 | GND | GND, por exemplo pino físico 6 |
-| OUT (3,3 V) | **GPIO 3, pino físico 5** |
+| OUT (3,3 V) | **GPIO 17, pino físico 11** |
 
-Não ligue 5 V ao GPIO. O GPIO 3 também é o SCL do I²C; o instalador detecta o conflito e, sem dispositivos I²C, `--disable-i2c` libera o pino (reinicie e rode o instalador de novo).
+Não ligue 5 V ao GPIO. Não use os GPIO 2 e 3 (pinos 3 e 5): a placa tem resistores que os mantêm em nível alto, então o robô veria movimento o tempo todo, mesmo com o sensor desligado. Evite também o GPIO 4 se o 1-Wire (`dtoverlay=w1-gpio`) estiver ativo. Com o sensor desconectado, o GPIO 17 lê "sem movimento".
 
 Para ignorar quem só passa:
 

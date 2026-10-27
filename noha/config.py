@@ -33,7 +33,7 @@ class Voice:
 
 @dataclass
 class Motion:
-    gpio: int = 3
+    gpio: int = 17  # physical pin 11: no board pull-up and no default alternate function
     warmup_seconds: float = 60
     rearm_seconds: float = 30
     greeting_cooldown_seconds: float = 120

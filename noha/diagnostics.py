@@ -64,13 +64,14 @@ def checks(status):
         if voice.get("gpio_ready") is False:
             add("sensor", "Sensor de presença", "error",
                 f"Sem leitura no GPIO {voice.get('gpio', '—')}. Confira a ligação do sensor.", "ajustes/sensor")
+        elif voice.get("gpio") in (2, 3):
+            add("sensor", "Sensor de presença", "error",
+                f"O GPIO {voice['gpio']} tem um resistor na placa que o mantém em nível alto: o robô vê movimento o "
+                "tempo todo. Ligue o OUT do sensor no GPIO 17 (pino 11) e escolha GPIO 17 nos ajustes.", "ajustes/sensor")
         elif (stuck := stuck_minutes(voice)) is not None:
-            gpio = voice.get("gpio")
-            cause = (f" No GPIO {gpio} a placa do Pi tem um resistor que mantém o pino em nível alto: ligue o OUT "
-                     "do sensor no GPIO 4 (pino 7) e escolha GPIO 4 nos ajustes." if gpio in (2, 3) else
-                     " Confira a ligação do OUT e, no sensor, diminua o tempo e a sensibilidade.")
             add("sensor", "Sensor de presença", "warn",
-                f"Indica movimento sem parar há {stuck} min. Se não há ninguém, o sinal está preso.{cause}", "ajustes/sensor")
+                f"Indica movimento sem parar há {stuck} min. Se não há ninguém, o sinal está preso: confira a ligação "
+                "do OUT e, no sensor, diminua o tempo e a sensibilidade.", "ajustes/sensor")
         elif status.get("presence") is False:
             add("sensor", "Sensor de presença", "warn", "Saudações por movimento desligadas.", "inicio")
         else:

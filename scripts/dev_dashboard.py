@@ -58,7 +58,7 @@ class Sample:
                  "motion_history": history, "gate": "pronto" if self.presence else "desligado", "gate_seconds": 0,
                  "sensor_enabled": self.presence, "greeting_local": True, "local_greetings": 4, "setup_ready": not offline,
                  "offline_voice": True, "key_configured": True, "config_digest": self.config.digest, "model": self.config.voice.model,
-                 "gpio": 3, "version": "2.0.0", "pid": 4242, "updated": now, "stale": False}
+                 "gpio": 17, "version": "2.0.0", "pid": 4242, "updated": now, "stale": False}
         if talking:
             voice.update(state="conversando", busy=True, speaking=int(now) % 6 < 3, gate="conversando")
         if offline:

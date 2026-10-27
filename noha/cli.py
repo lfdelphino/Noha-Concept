@@ -64,8 +64,10 @@ def doctor(config):
     try:
         result = subprocess.run(["pinctrl", "get", str(config.motion.gpio)], capture_output=True, text=True, timeout=5)
         value = result.stdout.strip()
-        report(result.returncode == 0 and "SCL" not in value and "SDA" not in value,
+        report(result.returncode == 0 and "SCL" not in value and "SDA" not in value and config.motion.gpio not in (2, 3),
                f"GPIO BCM{config.motion.gpio}: {value}")
+        if config.motion.gpio in (2, 3):
+            print("     Resistor pull-up da placa: sempre indica movimento. Use o GPIO 17 (pino 11).")
     except Exception:
         report(False, "Não foi possível consultar pinctrl")
     try:

@@ -183,7 +183,7 @@ class NetworkTests(unittest.IsolatedAsyncioTestCase):
 class ConfigTests(unittest.TestCase):
     def test_example_and_prompt_are_usable(self):
         cfg = Config.load("config/noha.toml")
-        self.assertEqual(cfg.motion.gpio, 3)
+        self.assertEqual(cfg.motion.gpio, 17)
         self.assertEqual(cfg.voice.model, "gpt-realtime-2.1-mini")
         self.assertNotIn("OPENAI_API_KEY", Path("config/noha.toml").read_text())
         self.assertIn("Delphino", Path("config/personality.txt").read_text(encoding="utf-8"))
