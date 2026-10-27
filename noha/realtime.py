@@ -73,6 +73,14 @@ def greeted(text):
 def idle_limit(config, answered):
     # Before any accepted visitor turn the greeting went unanswered: likely someone just passing by.
     return config.idle_seconds if answered else min(config.idle_seconds, config.unanswered_seconds)
+
+
+# The model ends the visit itself once the visitor is done, instead of waiting for the idle timeout.
+END_TOOL = {"type": "function", "name": "encerrar_conversa",
+            "description": "Encerra a conversa com o visitante. Primeiro diga uma despedida curta; depois chame. "
+                           "Use quando o visitante se despedir, agradecer dizendo que terminou ou pedir para você parar. "
+                           "Nunca chame no meio de um assunto.",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}
 ECHO_TAIL_MS = 400  # room reverb after Noha's last sample; still Noha, not the visitor
 
 
@@ -140,7 +148,13 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
     barge_in = audio.config.barge_in()
     speech = {}  # item_id -> [audio_start_ms, audio_end_ms]
     counts = {"replies": 0, "ignored": 0}
-    ending = None
+    ending, ending_at = None, 0
+
+    def finish(reason):
+        """Stop taking turns; the watchdog closes once Noha finishes speaking (at most 20 s)."""
+        nonlocal ending, ending_at
+        if not ending:
+            ending, ending_at = reason, time.monotonic()
     async with connect(url, additional_headers={"Authorization": f"Bearer {key}"},
                        open_timeout=20, close_timeout=3, ping_interval=20, ping_timeout=20,
                        max_size=4 * 1024 * 1024, max_queue=32) as ws:
@@ -150,7 +164,7 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
         # Every reply re-bills the whole kept conversation as input; cap it after the instructions.
         await send({"type": "session.update", "session": {
             "type": "realtime", "instructions": instructions, "output_modalities": ["audio"],
-            "tools": [], "max_output_tokens": config.max_output_tokens,
+            "tools": [END_TOOL], "tool_choice": "auto", "max_output_tokens": config.max_output_tokens,
             "truncation": {"type": "retention_ratio", "retention_ratio": 0.7,
                            "token_limits": {"post_instructions": config.context_tokens}},
             "audio": {
@@ -206,6 +220,10 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
                     state.generating = True
                 elif kind == "response.output_audio.delta":
                     playback.delta(event)
+                elif kind == "response.output_item.done":
+                    item = event.get("item") or {}
+                    if item.get("type") == "function_call" and item.get("name") == END_TOOL["name"]:
+                        finish("encerrar_conversa")
                 elif kind == "response.done":
                     response = event.get("response", {})
                     if response.get("id") == generating_id:
@@ -246,10 +264,9 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
                 await send({"type": "input_audio_buffer.append", "audio": base64.b64encode(data).decode("ascii")})
 
         async def watchdog():
-            nonlocal ending
             async with asyncio.timeout(30):
                 await ready.wait()
-            last_check = ending_at = 0
+            last_check = 0
             while True:
                 audio.check()
                 now = time.monotonic()
@@ -258,16 +275,15 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
                     names = {d["name"] for d in await asyncio.to_thread(devices)}
                     if any(n not in names for n in audio.config.required()):
                         raise RuntimeError("USB ou AEC desconectado")
-                    if not ending:
-                        ending = session_limit(config, started, now)
-                        ending_at = now
+                    if limit := session_limit(config, started, now):
+                        finish(limit)
                     last_check = now
                 talking = state.generating or audio.busy()
                 if state.idle(now, idle_limit(config, counts["replies"]), talking):
                     return
                 # A limit lets Noha finish its sentence, but never waits on a stuck reply.
                 if ending and (not talking or now - ending_at > 20):
-                    log.warning("Conversa encerrada pelo limite %s", ending)
+                    log.warning("Conversa encerrada: %s", ending)
                     return
                 await asyncio.sleep(0.1)
 

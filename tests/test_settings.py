@@ -123,6 +123,15 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(items["internet"]["level"], "error")
         self.assertIn("Noha-Setup-AB12", items["internet"]["detail"])
 
+    def test_sensor_held_high_for_minutes_is_reported_as_wiring(self):
+        held = {"motion": True, "updated": 10_000, "motion_history": [[10_000 - 720, None]]}
+        sensor = {i["id"]: i for i in diagnostics.checks(self.status(voice=held))}["sensor"]
+        self.assertEqual(sensor["level"], "warn")
+        self.assertIn("12 min", sensor["detail"])
+        self.assertIn("GPIO 4 (pino 7)", sensor["detail"])  # GPIO 3 has the board's I2C pull-up
+        visitor = {"motion": True, "updated": 10_000, "motion_history": [[10_000 - 90, None]]}
+        self.assertEqual(self.levels(self.status(voice=visitor))["sensor"], "ok")
+
     def test_stale_voice_service_hides_hardware_guesses(self):
         levels = self.levels(self.status(voice={"stale": True}))
         self.assertEqual(levels["voz"], "error")

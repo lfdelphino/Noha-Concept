@@ -7,6 +7,14 @@ import subprocess
 
 RATE = 24000
 BYTES_PER_SECOND = RATE * 2
+# About -38 dBFS. GPT-Live streams audio continuously, near-silence included, while nobody talks:
+# only audible chunks count as Noha speaking, or no visit could ever go idle.
+SILENCE_PEAK = 400
+
+
+def audible(data, threshold=SILENCE_PEAK):
+    samples = memoryview(data)[:len(data) - len(data) % 2].cast("h")
+    return len(samples) > 0 and max(max(samples), -min(samples)) > threshold
 
 
 def parse_nodes(dump):
@@ -96,7 +104,7 @@ class AudioIO:
         self.failure = None
         self.capture = self.playback = None
         self.spans = deque()
-        self.last_end = 0
+        self.last_end = self.last_audible = 0
 
     def start(self):
         import gi
@@ -177,6 +185,8 @@ class AudioIO:
             raise RuntimeError("Falha ao reproduzir áudio")
         self.spans.append((start, duration))
         self.last_end = start + duration
+        if audible(data):
+            self.last_audible = self.last_end
 
     def begin_item(self):
         self.spans.clear()
@@ -187,8 +197,9 @@ class AudioIO:
         return sum(max(0, min(duration, now - start)) for start, duration in self.spans) // 1_000_000
 
     def busy(self, tail_ms=0):
+        """Noha is audibly speaking (silent stretches of the stream do not count)."""
         latency = (self.config.playback_latency_ms + tail_ms) * 1_000_000
-        return self.last_end > 0 and self.running_ns() < self.last_end + latency
+        return self.last_audible > 0 and self.running_ns() < self.last_audible + latency
 
     def flush(self):
         if self.playback:
@@ -196,7 +207,7 @@ class AudioIO:
             self.playback.set_state(self.Gst.State.READY)
             self.playback.get_state(self.Gst.SECOND)
             self.playback.set_state(self.Gst.State.PLAYING)
-        self.last_end = 0
+        self.last_end = self.last_audible = 0
         self.spans.clear()
 
     def close(self):

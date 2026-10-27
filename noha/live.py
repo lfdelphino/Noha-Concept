@@ -34,8 +34,9 @@ class LivePlayback:
         if kind == "session.output_audio.delta":
             self.audio.push(base64.b64decode(event["delta"]))
         elif kind == "session.input_transcript.delta":
-            # Use text only as a speech signal; never retain or log its content.
-            if event.get("delta"):
+            # Use text only as a speech signal; never retain or log its content. Punctuation or
+            # whitespace alone (noise transcribed as nothing) must not keep the visit open.
+            if any(char.isalnum() for char in event.get("delta") or ""):
                 self.heard = True
                 new_speech = time.monotonic() - self.last_user > 1
                 self.last_user = time.monotonic()
@@ -107,7 +108,7 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
             nonlocal closing
             async with asyncio.timeout(30):
                 await ready.wait()
-            last_check = 0
+            last_check = limit_at = 0
             limit = None
             while True:
                 audio.check()
@@ -117,17 +118,24 @@ async def conversation(config, key, instructions, audio, greet=True, state_callb
                     names = {d["name"] for d in await asyncio.to_thread(devices)}
                     if any(n not in names for n in audio.config.required()):
                         raise RuntimeError("USB ou AEC desconectado")
-                    limit = session_limit(config, started, now)
+                    if not limit and (limit := session_limit(config, started, now)):
+                        limit_at = now
                     last_check = now
-                if audio.busy():
+                talking = audio.busy()
+                if talking:
                     playback.last_user = now  # idle counts from Noha's last word
-                if not audio.busy() and (now - playback.last_user >= idle_limit(config, playback.heard) or limit):
+                idle = not talking and now - playback.last_user >= idle_limit(config, playback.heard)
+                # A limit lets Noha finish its sentence, but never waits on a stream that keeps playing.
+                if idle or (limit and (not talking or now - limit_at > 20)):
                     if limit:
                         log.warning("Conversa encerrada pelo limite %s", limit)
                     closing = True
                     await send({"type": "session.close"})
-                    async with asyncio.timeout(15):
-                        await closed.wait()
+                    try:
+                        async with asyncio.timeout(15):
+                            await closed.wait()
+                    except TimeoutError:
+                        log.warning("GPT-Live não confirmou o encerramento; desconectando")
                     return
                 await asyncio.sleep(0.1)
 

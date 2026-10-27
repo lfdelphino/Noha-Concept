@@ -211,7 +211,7 @@ class Admin:
             ("POST", "password"): self.password, ("GET", "status"): self.status,
             ("GET", "settings"): self.get_settings, ("POST", "settings"): self.save_settings,
             ("POST", "discard"): self.discard_pending, ("POST", "presence"): self.presence,
-            ("POST", "trigger"): self.trigger, ("GET", "volume"): self.volume, ("POST", "volume"): self.set_volume,
+            ("POST", "trigger"): self.trigger, ("POST", "stop"): self.stop, ("GET", "volume"): self.volume, ("POST", "volume"): self.set_volume,
             ("GET", "usage"): self.usage, ("GET", "logs"): self.logs, ("POST", "ngrok"): self.save_ngrok,
             ("POST", "check-update"): functools.partial(self.update, install=False),
             ("POST", "install-update"): functools.partial(self.update, install=True),
@@ -359,6 +359,15 @@ class Admin:
             raise ValueError("Noha já está atendendo alguém")
         (voice_runtime() / "trigger").touch(mode=0o644)
         return {"accepted": True, "message": "Noha vai cumprimentar agora, como se alguém tivesse chegado."}
+
+    async def stop(self, data):
+        status = voice_status()
+        if status["stale"]:
+            raise ValueError("O serviço de voz não está respondendo")
+        if not status.get("busy"):
+            raise ValueError("Noha não está atendendo ninguém agora")
+        (voice_runtime() / "stop").touch(mode=0o644)
+        return {"accepted": True, "message": "Conversa encerrada. Noha volta a aguardar visitantes."}
 
     async def speaker_node(self):
         name = Config.load(ETC / "noha.toml").audio.speaker

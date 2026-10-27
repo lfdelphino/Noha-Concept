@@ -4,6 +4,19 @@ NETWORK = {"iniciando": "Verificando a conexão…", "buscando": "Buscando redes
            "reconectando": "Tentando as redes salvas…", "recuperando": "Recuperando a conexão…"}
 
 
+STUCK_SECONDS = 600  # far beyond an HC-SR501 hold time: a pin held high this long is wiring, not visitors
+
+
+def stuck_minutes(voice):
+    """Minutes of uninterrupted motion when that is implausibly long, else None."""
+    history = voice.get("motion_history") or []
+    if voice.get("motion") and history and history[-1][1] is None:
+        held = (voice.get("updated") or 0) - history[-1][0]
+        if held >= STUCK_SECONDS:
+            return int(held // 60)
+    return None
+
+
 def usd(value):
     return f"US$ {value:.2f}".replace(".", ",")
 
@@ -51,6 +64,13 @@ def checks(status):
         if voice.get("gpio_ready") is False:
             add("sensor", "Sensor de presença", "error",
                 f"Sem leitura no GPIO {voice.get('gpio', '—')}. Confira a ligação do sensor.", "ajustes/sensor")
+        elif (stuck := stuck_minutes(voice)) is not None:
+            gpio = voice.get("gpio")
+            cause = (f" No GPIO {gpio} a placa do Pi tem um resistor que mantém o pino em nível alto: ligue o OUT "
+                     "do sensor no GPIO 4 (pino 7) e escolha GPIO 4 nos ajustes." if gpio in (2, 3) else
+                     " Confira a ligação do OUT e, no sensor, diminua o tempo e a sensibilidade.")
+            add("sensor", "Sensor de presença", "warn",
+                f"Indica movimento sem parar há {stuck} min. Se não há ninguém, o sinal está preso.{cause}", "ajustes/sensor")
         elif status.get("presence") is False:
             add("sensor", "Sensor de presença", "warn", "Saudações por movimento desligadas.", "inicio")
         else:

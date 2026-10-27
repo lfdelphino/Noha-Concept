@@ -161,6 +161,26 @@ class RobotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(robot.offline, {})
         self.assertTrue(robot.prepared)
 
+    async def test_stop_request_ends_the_visit_and_waits_for_visitors(self):
+        robot = self.robot()
+        started = asyncio.Event()
+
+        async def visit():
+            started.set()
+            await asyncio.Event().wait()  # a conversation that would never end by itself
+        robot.visit = visit
+        (app.runtime_dir() / "trigger").touch()
+        await robot.tick()
+        await started.wait()
+        (app.runtime_dir() / "stop").touch()
+        await robot.tick()
+        await asyncio.gather(robot.active, return_exceptions=True)
+        await robot.tick()
+        self.assertIsNone(robot.active)
+        self.assertFalse((app.runtime_dir() / "stop").exists())
+        self.assertEqual((app._status["state"], app._status["detail"]), ("aguardando_movimento", "Conversa encerrada pelo painel"))
+        robot.ring.close()
+
     async def test_dashboard_trigger_starts_a_visit_unless_over_budget(self):
         robot = self.robot()
         visits = []

@@ -622,3 +622,72 @@ class PresenceTests(unittest.TestCase):
                 Config.load(config)
             config.write_text("[greeting]\ntexts = []\nlocal = false\n")
             self.assertFalse(Config.load(config).greeting.local)
+
+
+class EndingTests(unittest.IsolatedAsyncioTestCase):
+    """Visits must end: by the model's tool, by idleness even when the stream never stops."""
+    MIC = EchoCancelTests.MIC
+
+    def fake_audio(self):
+        from types import SimpleNamespace
+        from noha.config import Audio
+        return SimpleNamespace(config=Audio(microphone=self.MIC, speaker=EchoCancelTests.HDMI), input=asyncio.Queue(),
+                               start_capture=lambda: None, check=lambda: None, flush=lambda: None, push=lambda data: None,
+                               busy=lambda tail_ms=0: False, played_ms=lambda: 0, begin_item=lambda: None)
+
+    def test_only_audible_chunks_count_as_speaking(self):
+        from array import array
+        from noha.audio import audible
+        self.assertFalse(audible(array("h", [0, 3, -5, 120] * 240).tobytes()))  # GPT-Live between turns
+        self.assertTrue(audible(array("h", [0, 2500, -2600, 40] * 240).tobytes()))
+        self.assertFalse(audible(b""))
+
+    async def test_end_tool_closes_the_realtime_visit(self):
+        from noha.config import Voice
+        from noha.realtime import END_TOOL, conversation
+
+        class Hanging(FakeSocket):
+            async def __anext__(self):
+                if not self.events:
+                    await asyncio.Event().wait()  # the server would keep the session open
+                return await super().__anext__()
+        audio = self.fake_audio()
+        socket = Hanging([{"type": "session.updated"}, {"type": "response.output_item.done", "item": {
+            "type": "function_call", "name": "encerrar_conversa", "call_id": "c1", "arguments": "{}"}}])
+        with patch("websockets.asyncio.client.connect", lambda *a, **k: socket), \
+             patch("noha.realtime.spent_today", return_value=0), patch("noha.realtime.record"), \
+             patch("noha.audio.devices", return_value=[{"name": n} for n in audio.config.required()]):
+            async with asyncio.timeout(5):
+                await conversation(Voice(), "key", "Instruções", audio, greet=False)  # returns: a normal end
+        self.assertIn(END_TOOL, socket.sent[0]["session"]["tools"])
+
+    async def test_gpt_live_visit_idles_out_while_its_stream_keeps_arriving(self):
+        from noha.config import Voice
+        from noha.live import conversation
+
+        class LiveSocket(FakeSocket):
+            def __init__(self):
+                super().__init__([])
+                self.queue = asyncio.Queue()
+                self.queue.put_nowait(json.dumps({"type": "session.started"}))
+
+            async def send(self, raw):
+                await super().send(raw)
+                if json.loads(raw)["type"] == "session.close":
+                    self.queue.put_nowait(json.dumps({"type": "session.closed", "reason": "close_requested"}))
+
+            async def __anext__(self):
+                try:
+                    return self.queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    await asyncio.sleep(0.02)  # near-silent output keeps streaming
+                    return json.dumps({"type": "session.output_audio.delta", "delta": base64.b64encode(bytes(960)).decode()})
+        socket = LiveSocket()
+        audio = self.fake_audio()
+        voice = Voice(model="gpt-live-1", voice="marin", idle_seconds=0.3, unanswered_seconds=0.3)
+        with patch("websockets.asyncio.client.connect", lambda *a, **k: socket), \
+             patch("noha.realtime.spent_today", return_value=0), patch("noha.live.record"), \
+             patch("noha.audio.devices", return_value=[{"name": n} for n in audio.config.required()]):
+            async with asyncio.timeout(5):
+                await conversation(voice, "key", "Instruções", audio, greet=False)
+        self.assertIn({"type": "session.close"}, socket.sent)

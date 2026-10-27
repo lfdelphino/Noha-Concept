@@ -21,8 +21,12 @@ export function mount(root, ctx) {
   const title = h("h2", {class: "hero-title"}, "Conectando ao robô…");
   const detail = h("p", {class: "hero-detail"}, "");
   const meta = h("dl", {class: "hero-meta"});
+  const stopButton = h("button", {class: "btn btn-danger hero-stop", type: "button", hidden: true}, icon("x", 18), "Encerrar conversa");
+  stopButton.addEventListener("click", () => busy(stopButton, async () => {
+    try { toast((await api("stop", {})).message); } catch (failure) { toast(failure.message, "error"); }
+  }));
   const hero = h("section", {class: "hero", "aria-live": "polite"},
-    h("div", {class: "hero-body"}, h("p", {class: "eyebrow"}, "AGORA"), title, detail), heroOrb, meta);
+    h("div", {class: "hero-body"}, h("p", {class: "eyebrow"}, "AGORA"), title, detail, stopButton), heroOrb, meta);
 
   // Everyday controls
   const presence = switchControl({checked: true, label: "Saudar por movimento", onChange: async enabled => {
@@ -114,6 +118,7 @@ export function mount(root, ctx) {
 
       setSwitch(presence, status?.presence !== false);
       testButton.disabled = testButton.classList.contains("is-busy") || !!voice.stale || !!voice.busy || !!voice.updating;
+      stopButton.hidden = !voice.busy || !!voice.stale;
 
       const today = status?.today || {};
       text(visits.value, fmt.number(today.visits ?? 0));

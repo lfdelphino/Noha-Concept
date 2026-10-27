@@ -91,7 +91,7 @@ def main():
     run.add_argument("--simulate-motion", action="store_true")
     sensor = sub.add_parser("sensor", help="liga ou desliga as saudações por movimento")
     sensor.add_argument("state", choices=("on", "off", "status"), nargs="?", default="status")
-    for name in ("doctor", "audio-list", "status", "trigger", "network", "portal", "web", "admin", "dashboard-password", "ngrok"):
+    for name in ("doctor", "audio-list", "status", "trigger", "stop", "network", "portal", "web", "admin", "dashboard-password", "ngrok"):
         sub.add_parser(name)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -131,11 +131,14 @@ def main():
         from .audio import devices
         print(json.dumps(devices(), ensure_ascii=False, indent=2))
         return
-    if args.command in {"trigger", "status"}:
+    if args.command in {"trigger", "stop", "status"}:
         from .app import runtime_dir
         if args.command == "trigger":
             (runtime_dir() / "trigger").touch(mode=0o600)
             print("Movimento simulado enviado ao serviço do usuário.")
+        elif args.command == "stop":
+            (runtime_dir() / "stop").touch(mode=0o600)
+            print("Pedido para encerrar a conversa atual enviado.")
         else:
             path = runtime_dir() / "status.json"
             print(path.read_text() if path.exists() else "Serviço ainda não publicou estado.")

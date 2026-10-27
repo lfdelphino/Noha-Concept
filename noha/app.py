@@ -130,6 +130,13 @@ class Robot:
         manual = trigger.exists()  # `noha trigger` or the dashboard's test button
         if manual:
             trigger.unlink(missing_ok=True)
+        stop = runtime_dir() / "stop"  # `noha stop` or the dashboard's end button
+        if stop.exists():
+            stop.unlink(missing_ok=True)
+            if self.active and not self.active.done():
+                log.info("Conversa encerrada pelo painel")
+                # Cancelling closes the connection at once; the visit still records its cost and outcome.
+                self.active.cancel()
         detected = bool(self.sensor and self.sensor.value)
         if self.motion.update(time.time(), detected):
             self.next_heartbeat = 0  # show motion edges on the dashboard right away
@@ -164,6 +171,10 @@ class Robot:
         if self.active and self.active.done():
             try:
                 self.active.result()
+            except asyncio.CancelledError:
+                update_status("aguardando_movimento" if self.enabled else "sensor_desligado",
+                              "Conversa encerrada pelo painel")
+                self.next_heartbeat = 0
             except Exception as exc:
                 log.error("Visita encerrada type=%s", type(exc).__name__)
             self.active = None

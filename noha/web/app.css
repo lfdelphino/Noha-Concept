@@ -255,6 +255,7 @@ section[id^="sec-"] { scroll-margin-top: 84px; }
 .hero[data-tone="error"] { background: radial-gradient(120% 140% at 100% 0%, #6a2b23 0%, #2a1412 62%); }
 .hero .eyebrow { color: rgb(243 247 236 / 58%); }
 .hero-body { grid-area: body; align-self: center; min-width: 0; }
+.hero-stop { margin-top: 16px; }
 .hero-title { margin-top: 6px; font-size: 24px; font-weight: 650; line-height: 1.2; letter-spacing: -.02em; }
 .hero-detail { max-width: 480px; margin-top: 8px; color: rgb(243 247 236 / 74%); font-size: 14px; }
 .hero > .orb { grid-area: orb; align-self: center; }

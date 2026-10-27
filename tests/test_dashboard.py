@@ -143,6 +143,16 @@ class AdminControlTests(unittest.IsolatedAsyncioTestCase):
                 await admin.Admin().trigger({})
             self.assertTrue((runtime / "trigger").exists())
 
+    async def test_end_button_only_when_a_visit_is_running(self):
+        with TemporaryDirectory() as folder:
+            runtime = Path(folder)
+            with patch.object(admin, "voice_runtime", return_value=runtime),                     patch.object(admin, "voice_status", return_value={"stale": False, "busy": False}):
+                with self.assertRaisesRegex(ValueError, "não está atendendo"):
+                    await admin.Admin().stop({})
+            with patch.object(admin, "voice_runtime", return_value=runtime),                     patch.object(admin, "voice_status", return_value={"stale": False, "busy": True}):
+                await admin.Admin().stop({})
+            self.assertTrue((runtime / "stop").exists())
+
     async def test_volume_uses_the_configured_speaker_node(self):
         helper = admin.Admin()
         calls = []
