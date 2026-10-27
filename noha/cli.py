@@ -91,8 +91,9 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run")
     run.add_argument("--simulate-motion", action="store_true")
-    sensor = sub.add_parser("sensor", help="liga ou desliga as saudações por movimento")
-    sensor.add_argument("state", choices=("on", "off", "status"), nargs="?", default="status")
+    sensor = sub.add_parser("sensor", help="liga ou desliga as saudações por movimento; watch mostra a leitura ao vivo")
+    sensor.add_argument("state", choices=("on", "off", "status", "watch"), nargs="?", default="status")
+    sensor.add_argument("--gpio", type=int, help="watch: pino BCM a ler (padrão: o configurado)")
     for name in ("doctor", "audio-list", "status", "trigger", "stop", "network", "portal", "web", "admin", "dashboard-password", "ngrok"):
         sub.add_parser(name)
     args = parser.parse_args()
@@ -109,6 +110,10 @@ def main():
             raise SystemExit("As senhas não coincidem")
         atomic_write(ETC / "dashboard-password.json", password_record(password), backup=True)
         print("Senha alterada. Todos os acessos anteriores foram encerrados.")
+        return
+    if args.command == "sensor" and args.state == "watch":
+        from .sensorwatch import watch
+        watch(args.gpio if args.gpio is not None else Config.load(args.config).motion.gpio)
         return
     if args.command == "sensor":
         from .config import PRESENCE, presence_enabled

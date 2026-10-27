@@ -691,3 +691,33 @@ class EndingTests(unittest.IsolatedAsyncioTestCase):
             async with asyncio.timeout(5):
                 await conversation(voice, "key", "Instruções", audio, greet=False)
         self.assertIn({"type": "session.close"}, socket.sent)
+
+
+class SensorWatchTests(unittest.TestCase):
+    def test_reads_pinctrl_levels(self):
+        from noha.sensorwatch import parse_level
+        self.assertTrue(parse_level("17: ip    pd | hi // GPIO17 = input"))
+        self.assertFalse(parse_level("17: ip    pd | lo // GPIO17 = input"))
+        self.assertIsNone(parse_level("Invalid GPIO"))
+
+    def test_prints_each_edge_with_durations_and_a_summary(self):
+        import io
+        from noha.sensorwatch import watch
+        levels = iter([False, False, True, True, True, False])
+        ticks = iter(range(100))
+        now = [0.0]
+
+        def sleep(_):
+            now[0] += 1.0
+            if now[0] >= 6:
+                raise KeyboardInterrupt
+        out = io.StringIO()
+        watch(17, out=out, read=lambda pin: next(levels), robot=lambda: "pronto para cumprimentar",
+              clock=lambda: now[0], wall=lambda: 1_800_000_000 + next(ticks), sleep=sleep, width=100)
+        text = out.getvalue()
+        self.assertIn("GPIO 17 (pino físico 11)", text)
+        self.assertIn("▲ MOVIMENTO  (parado por 2,0 s)", text)
+        self.assertIn("▼ parado     (movimento durou 3,0 s)", text)
+        self.assertIn("robô: pronto para cumprimentar", text)
+        self.assertIn("1 detecção em 6,0 s; movimento em 3,0 s (50% do tempo).", text)
+        self.assertIn("███▁", text)  # the strip, newest second on the right

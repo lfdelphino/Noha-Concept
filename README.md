@@ -93,6 +93,15 @@ Desligue a alimentação para conectar. Confira os pinos pelas inscrições do m
 
 Não ligue 5 V ao GPIO. Não use os GPIO 2 e 3 (pinos 3 e 5): a placa tem resistores que os mantêm em nível alto, então o robô veria movimento o tempo todo, mesmo com o sensor desligado. Evite também o GPIO 4 se o 1-Wire (`dtoverlay=w1-gpio`) estiver ativo. Com o sensor desconectado, o GPIO 17 lê "sem movimento".
 
+Para ver ao vivo o que o sensor lê, no terminal do Pi:
+
+```bash
+noha sensor watch            # pino configurado; Ctrl+C mostra um resumo
+noha sensor watch --gpio 17  # outro pino, por exemplo para testar a ligação antes de trocar nos ajustes
+```
+
+Cada mudança aparece com horário e duração (`▲ MOVIMENTO`, `▼ parado`), com uma faixa dos últimos 60 segundos e o que o robô fará (aquecendo, confirmando, pronto, rearmando). Funciona com o serviço de voz ligado ou parado.
+
 Para ignorar quem só passa:
 
 - Jumper em **H** (redisparo): a saída fica alta enquanto houver movimento.
