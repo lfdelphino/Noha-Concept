@@ -68,6 +68,24 @@ class DetectionTests(unittest.TestCase):
         self.assertEqual(found[0][1:], (0.0, 0.0, found[0][3], found[0][4]))
         self.assertTrue(all(0 <= edge <= 1 for edge in found[0][1:]))
 
+    def test_only_the_schema_noise_is_dropped_from_stderr(self):
+        import sys
+        import tempfile
+        sys.stderr.flush()
+        saved = os.dup(2)
+        with tempfile.TemporaryFile() as journal:
+            os.dup2(journal.fileno(), 2)
+            try:
+                with camera.filtered_stderr():
+                    os.write(2, b"Schema error: Trying to register schema with name Scaler\n")
+                    os.write(2, b"ERROR RPI camera frontend has timed out\n")
+                    os.write(2, b"Schema error: Trying to register schema with name ZipMap\n")
+            finally:
+                os.dup2(saved, 2)
+                os.close(saved)
+            journal.seek(0)
+            self.assertEqual(journal.read(), b"ERROR RPI camera frontend has timed out\n")
+
     def test_rotation_turns_clockwise(self):
         frame = np.arange(6).reshape(2, 3)
         self.assertEqual(camera.upright(frame, 90).tolist(), [[3, 0], [4, 1], [5, 2]])

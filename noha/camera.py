@@ -3,11 +3,15 @@
 YOLOX-Nano (Megvii, Apache-2.0: data/yolox_nano.onnx) on ONNX Runtime finds people in a small frame a few times
 per second. `CameraSensor` has the motion sensor's interface (`value`, `close`), so the visit logic is the same."""
 import base64
+from contextlib import contextmanager
 from functools import lru_cache
 from importlib.resources import files
 import io
 import json
 import logging
+import os
+import sys
+import tempfile
 import threading
 import time
 
@@ -76,7 +80,8 @@ class Detector:
         options.intra_op_num_threads, options.inter_op_num_threads = threads, 1
         options.log_severity_level = 3
         model = files("noha").joinpath("data/yolox_nano.onnx").read_bytes()
-        self.session = onnxruntime.InferenceSession(model, options, providers=["CPUExecutionProvider"])
+        with filtered_stderr():
+            self.session = onnxruntime.InferenceSession(model, options, providers=["CPUExecutionProvider"])
         self.input = self.session.get_inputs()[0].name
 
     def __call__(self, frame, threshold):
@@ -106,6 +111,28 @@ class Presence:
             if self.value and now - self.last >= self.hold:
                 self.value = False
         return self.value
+
+
+@contextmanager
+def filtered_stderr(noise=b"Schema error"):
+    """Drop one kind of harmless native-library line from stderr (the journal), keeping every other line.
+
+    Debian's python3-onnxruntime loads two copies of the runtime that both register the ONNX operator schemas
+    in the shared libonnx: ~570 "Schema error" lines each time a model is loaded, with no effect on results."""
+    sys.stderr.flush()
+    saved = os.dup(2)
+    with tempfile.TemporaryFile() as capture:
+        os.dup2(capture.fileno(), 2)
+        try:
+            yield
+        finally:
+            sys.stderr.flush()
+            os.dup2(saved, 2)
+            os.close(saved)
+            capture.seek(0)
+            kept = b"".join(line for line in capture if noise not in line)
+            if kept:
+                os.write(2, kept)
 
 
 def open_picamera():
