@@ -219,6 +219,7 @@ def pending_view(pending):
 class Admin:
     def __init__(self):
         self.cpu = None
+        self.snapshot_lock = asyncio.Lock()  # one camera request at a time: two open dashboards share the file
         self.routes = {
             ("GET", "auth"): self.auth, ("POST", "login"): self.login, ("POST", "kiosk"): self.kiosk,
             ("POST", "password"): self.password, ("GET", "status"): self.status,
@@ -394,17 +395,18 @@ class Admin:
             raise ValueError("A câmera não envia imagens. Confira o cabo e o diagnóstico.")
         runtime = voice_runtime()
         result = runtime / "snapshot.json"
-        result.unlink(missing_ok=True)
-        (runtime / "snapshot").touch(mode=0o644)
-        try:
-            for _ in range(40):  # the camera thread answers with its next frame, a fraction of a second
-                await asyncio.sleep(0.1)
-                if result.exists():
-                    return read_json(result)
-            raise ValueError("A câmera não respondeu. Tente de novo em alguns segundos.")
-        finally:
-            (runtime / "snapshot").unlink(missing_ok=True)
+        async with self.snapshot_lock:
             result.unlink(missing_ok=True)
+            (runtime / "snapshot").touch(mode=0o644)
+            try:
+                for _ in range(80):  # the camera thread answers with its next frame, a fraction of a second
+                    await asyncio.sleep(0.05)
+                    if result.exists():
+                        return read_json(result)
+                raise ValueError("A câmera não respondeu. Tente de novo em alguns segundos.")
+            finally:
+                (runtime / "snapshot").unlink(missing_ok=True)
+                result.unlink(missing_ok=True)
 
     async def speaker_node(self):
         name = Config.load(ETC / "noha.toml").audio.speaker

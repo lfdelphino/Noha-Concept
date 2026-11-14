@@ -310,6 +310,28 @@ class SnapshotTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaisesRegex(ValueError, "sensor de movimento"):
                     await helper.snapshot({})
 
+    async def test_two_dashboards_watching_at_once_each_get_their_own_picture(self):
+        with TemporaryDirectory() as folder:
+            runtime, served = Path(folder), []
+
+            async def camera_thread():  # answers each request with the next frame, like CameraSensor.step
+                while True:
+                    request = runtime / "snapshot"
+                    if request.exists():
+                        request.unlink()
+                        served.append(len(served))
+                        (runtime / "snapshot.json").write_text(json.dumps({"frame": served[-1], "people": []}))
+                    await asyncio.sleep(0.01)
+            helper = admin.Admin()
+            with patch.object(admin, "voice_runtime", return_value=runtime), \
+                    patch.object(admin, "voice_status", return_value={"stale": False, "source": "camera", "gpio_ready": True}):
+                answering = asyncio.create_task(camera_thread())
+                try:
+                    shots = await asyncio.gather(*(helper.snapshot({}) for _ in range(4)))
+                finally:
+                    answering.cancel()
+            self.assertEqual(sorted(shot["frame"] for shot in shots), [0, 1, 2, 3])
+
     async def test_switching_to_the_camera_needs_a_working_camera(self):
         async def command(*args, **kwargs):
             return json.dumps(["Nenhuma câmera encontrada: confira o cabo flat"])

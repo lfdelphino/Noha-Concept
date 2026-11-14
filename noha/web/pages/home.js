@@ -84,21 +84,58 @@ export function mount(root, ctx) {
   const gate = h("span", {class: "badge badge-neutral"}, "—");
   const timeline = h("div", {class: "timeline", role: "img"});
   const motionCount = h("span", {}, "");
-  // What the camera sees, on request only: the picture is made on the robot and never stored.
-  const view = h("figure", {class: "camera-view", hidden: true});
-  const viewButton = h("button", {class: "btn btn-ghost btn-small", type: "button", hidden: true}, icon("camera", 16), "Ver a câmera");
-  viewButton.addEventListener("click", () => busy(viewButton, async () => {
-    try {
-      const shot = await api("snapshot", {});
-      const near = shot.people.filter(person => person.counts).length, far = shot.people.length - near;
-      const close = h("button", {class: "btn-icon", type: "button", "aria-label": "Fechar a imagem", onclick: () => { view.hidden = true; replace(view); }}, icon("x", 18));
-      replace(view, h("img", {src: shot.image, alt: "Imagem atual da câmera da Noha", width: "416"}),
-        h("figcaption", {class: "help"}, h("span", {},
-          shot.people.length ? `${near} perto o bastante (contorno verde)${far ? `, ${far} longe demais (laranja)` : ""}. ` : "Nenhuma pessoa na imagem. ",
-          `Para contar, a pessoa ocupa ao menos ${shot.min_height}% da altura da imagem.`), close));
+  // What the camera sees, only while someone watches: pictures are made on the robot one at a time, about once a
+  // second, and never stored. The view pauses by itself after a while so it is never left running unnoticed.
+  const LIVE_MS = 120000, FRAME_MS = 800;
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const picture = h("img", {alt: "Imagem ao vivo da câmera da Noha", width: "416"});  // portrait when rotated
+  const liveBadge = h("span", {class: "badge camera-live"}, h("span", {class: "live-dot"}), h("span", {}, "Ao vivo"));
+  const caption = h("span", {});
+  const closeView = h("button", {class: "btn-icon", type: "button", "aria-label": "Fechar a câmera"}, icon("x", 18));
+  const view = h("figure", {class: "camera-view", hidden: true},
+    h("div", {class: "camera-frame"}, picture, liveBadge), h("figcaption", {class: "help"}, caption, closeView));
+  const viewButton = h("button", {class: "btn btn-ghost btn-small", type: "button", hidden: true}, icon("camera", 16), h("span", {}, "Ver a câmera"));
+  let live = null;  // the running view: {stop}
+
+  function describeShot(shot) {
+    const near = shot.people.filter(person => person.counts).length, far = shot.people.length - near;
+    return (shot.people.length ? `${near} perto o bastante (contorno verde)${far ? `, ${far} longe demais (laranja)` : ""}. ` : "Nenhuma pessoa na imagem. ")
+      + `Para contar, a pessoa ocupa ao menos ${shot.min_height}% da altura da imagem.`;
+  }
+  function showLive(on, label = on ? "Ao vivo" : "Pausada") {
+    liveBadge.className = `badge camera-live ${on ? "badge-ok" : "badge-neutral"}`;
+    liveBadge.firstChild.classList.toggle("on", on);
+    text(liveBadge.lastChild, label);
+    text(viewButton.lastChild, on ? "Pausar a câmera" : "Ver a câmera");
+  }
+  function stopLive(close = false) {
+    if (live) live.stop = true;
+    live = null;
+    showLive(false);
+    if (close) { view.hidden = true; picture.removeAttribute("src"); text(caption, ""); }
+  }
+  async function startLive() {
+    const run = live = {stop: false};
+    const until = Date.now() + LIVE_MS;
+    showLive(true);
+    while (!run.stop && Date.now() < until) {
+      if (document.hidden) { await sleep(500); continue; }  // nobody looking: no pictures
+      const started = Date.now();
+      let shot;
+      try { shot = await api("snapshot", {}); } catch (failure) {
+        if (!run.stop) toast(failure.message, "error");
+        break;
+      }
+      if (run.stop || !view.isConnected) break;
+      picture.src = shot.image;
+      text(caption, describeShot(shot));
       view.hidden = false;
-    } catch (failure) { toast(failure.message, "error"); }
-  }));
+      await sleep(Math.max(0, FRAME_MS - (Date.now() - started)));
+    }
+    if (live === run) stopLive();  // timed out or failed: keep the last picture, paused
+  }
+  viewButton.addEventListener("click", () => { if (live) stopLive(); else startLive(); });
+  closeView.addEventListener("click", () => stopLive(true));
   const sensor = h("section", {class: "card sensor"},
     h("div", {class: "card-head"}, h("h3", {class: "card-title"}, icon("radar", 18), "Sensor de presença"), gate),
     h("div", {class: "sensor-now"}, dot, h("div", {}, motionState, motionDetail)),
@@ -121,6 +158,7 @@ export function mount(root, ctx) {
       h("div", {class: "span-7"}, sensor), h("div", {class: "span-5"}, diagnostics)));
 
   return {
+    destroy: () => stopLive(true),  // leaving the page stops the camera view
     update(status) {
       const voice = status?.voice || {};
       const view = describe(status);
@@ -155,6 +193,7 @@ export function mount(root, ctx) {
       text(motionState, presenceNow(voice));
       text(motionDetail, presenceDetail(voice));
       viewButton.hidden = !fresh || !usesCamera(voice) || voice.gpio_ready === false;
+      if (viewButton.hidden && live) stopLive(true);
       text(gate, gateLabel(voice));
       const count = drawTimeline(timeline, voice);
       text(motionCount, count ? `${count} ${count === 1 ? "detecção" : "detecções"}` : "nenhuma detecção");

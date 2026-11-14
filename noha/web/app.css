@@ -289,7 +289,10 @@ section[id^="sec-"] { scroll-margin-top: 84px; }
 .sensor-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .sensor-actions .btn { margin-top: 14px; }
 .camera-view { margin: 16px 0 0; }
+.camera-frame { position: relative; max-width: 416px; }
 .camera-view img { display: block; width: 100%; max-width: 416px; height: auto; border-radius: 10px; background: var(--surface-2); }
+.camera-live { position: absolute; top: 10px; left: 10px; box-shadow: 0 1px 4px rgb(0 0 0 / .25); }
+.camera-live .live-dot { width: 8px; height: 8px; }
 .camera-view figcaption { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-top: 8px; max-width: 416px; }
 .live-dot { width: 14px; height: 14px; flex-shrink: 0; border-radius: 50%; background: var(--line-strong); transition: background-color .2s; }
 .live-dot.on { background: var(--ok); animation: ping 1.4s ease-out infinite; }
