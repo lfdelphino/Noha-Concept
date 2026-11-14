@@ -15,6 +15,8 @@ eagerness = "medium"
 max_output_tokens = 300
 
 [motion]
+# gpio: motion sensor (HC-SR501, LD2410) on a pin | camera: the Pi camera recognizes people (settings in [camera])
+source = "gpio"
 gpio = 17 # BCM numbering: physical pin 11. Never 2 or 3: their board pull-ups read as motion
 warmup_seconds = 60
 rearm_seconds = 30
@@ -25,6 +27,13 @@ greeting_cooldown_seconds = 120
 confirm_seconds = 6
 confirm_pulses = 2
 confirm_window_seconds = 20
+
+[camera]
+# Used when [motion] source = "camera". People are found on the Pi itself; pictures are never stored or sent.
+# With the camera, confirm_seconds is how long a person must stay in view (1-2 s); pulses and warmup do not apply.
+rotation = 0 # degrees clockwise that turn the picture upright: 0, 90, 180 or 270
+min_height = 30 # percent of the picture's height a person must fill: raise it to greet only people close by
+confidence = 50 # percent; lower finds more people and more false ones
 
 [audio]
 # Installer replaces these with stable PipeWire node.name values.

@@ -61,7 +61,16 @@ def checks(status):
         else:
             add("audio", "Áudio", "warn", "Verificando os dispositivos…")
 
-        if voice.get("gpio_ready") is False:
+        if voice.get("source") == "camera":
+            if voice.get("gpio_ready") is False:
+                add("sensor", "Sensor de presença", "error",
+                    "A câmera não envia imagens. Confira o cabo flat nas duas pontas (contatos virados para os "
+                    "contatos do conector) e reinicie o Pi; noha doctor mostra o que falta.", "ajustes/sensor")
+            elif status.get("presence") is False:
+                add("sensor", "Sensor de presença", "warn", "Saudações por presença desligadas.", "inicio")
+            else:
+                add("sensor", "Sensor de presença", "ok", "Câmera · reconhece pessoas no próprio robô")
+        elif voice.get("gpio_ready") is False:
             add("sensor", "Sensor de presença", "error",
                 f"Sem leitura no GPIO {voice.get('gpio', '—')}. Confira a ligação do sensor.", "ajustes/sensor")
         elif voice.get("gpio") in (2, 3):

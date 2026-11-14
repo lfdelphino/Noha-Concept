@@ -25,6 +25,7 @@ class Setting:
     choices: tuple = ()
     advanced: bool = False
     source: str = ""  # device kind: Audio/Source or Audio/Sink
+    only: str = ""  # shown only while motion.source has this value
 
     @property
     def section(self):
@@ -37,14 +38,15 @@ class Setting:
     def describe(self):
         return {"key": self.key, "group": self.group, "label": self.label, "kind": self.kind, "help": self.help,
                 "unit": self.unit, "min": self.minimum, "max": self.maximum, "step": self.step,
-                "choices": [list(choice) for choice in self.choices], "advanced": self.advanced, "source": self.source}
+                "choices": [list(choice) for choice in self.choices], "advanced": self.advanced, "source": self.source,
+                "only": self.only}
 
 
 GROUPS = (
     ("personalidade", "Voz e personalidade", "Como Noha fala e o que ela sabe sobre a casa."),
     ("saudacoes", "Saudações", "O que Noha diz quando alguém chega."),
     ("conversa", "Conversa", "Quando Noha escuta, responde e encerra."),
-    ("sensor", "Sensor de presença", "Quando um movimento vira uma saudação."),
+    ("sensor", "Sensor de presença", "Como Noha percebe quem chega e quando isso vira uma saudação."),
     ("audio", "Áudio e LEDs", "Microfone, alto-falante e anel de luz."),
     ("custos", "Custos", "Limites de gasto com a OpenAI."),
     ("chave", "Chave OpenAI", "Credencial usada nas conversas e na síntese das saudações."),
@@ -82,19 +84,35 @@ SETTINGS = (
     Setting("greeting.speech_margin_db", "conversa", "Sensibilidade à voz", "float",
             "Quanto a voz precisa superar o ruído da sala para contar como resposta. Menor é mais sensível.",
             "dB", 3, 40, 1, advanced=True),
-    Setting("motion.gpio", "sensor", "Pino do sensor", "gpio", "Numeração BCM. Confira a ligação física antes de trocar."),
-    Setting("motion.confirm_seconds", "sensor", "Movimento contínuo para confirmar", "float",
-            "Mantenha acima do tempo de retenção do sensor (HC-SR501: cerca de 3 s no mínimo).", "s", 1, 60, 1),
+    Setting("motion.source", "sensor", "Como perceber visitantes", "choice",
+            "A câmera reconhece pessoas, mesmo paradas, e ignora outros movimentos. As imagens são analisadas no "
+            "próprio robô e nunca são gravadas ou enviadas.",
+            choices=(("gpio", "Sensor de movimento"), ("camera", "Câmera"))),
+    Setting("motion.gpio", "sensor", "Pino do sensor", "gpio", "Numeração BCM. Confira a ligação física antes de trocar.",
+            only="gpio"),
+    Setting("camera.min_height", "sensor", "Tamanho mínimo da pessoa", "int",
+            "Quanto da altura da imagem a pessoa precisa ocupar. Quem está longe aparece menor: aumente para "
+            "cumprimentar só quem chega perto.", "%", 5, 100, 5, only="camera"),
+    Setting("camera.rotation", "sensor", "Girar a imagem", "choice",
+            "As pessoas precisam aparecer de pé. Depois de salvar, confira em Ver a câmera.",
+            choices=((0, "Não girar"), (90, "90° para a direita"), (180, "180°"), (270, "90° para a esquerda")),
+            only="camera"),
+    Setting("motion.confirm_seconds", "sensor", "Presença contínua para confirmar", "float",
+            "Quem só passa não é cumprimentado. Sensor de movimento: mantenha acima do tempo de retenção "
+            "(HC-SR501: cerca de 3 s). Câmera: 1 a 2 s bastam.", "s", 1, 60, 1),
     Setting("motion.confirm_pulses", "sensor", "Detecções para confirmar", "int",
-            "Detecções separadas que confirmam alguém por perto. 1 cumprimenta na primeira.", "", 1, 10, 1),
+            "Detecções separadas que confirmam alguém por perto. 1 cumprimenta na primeira.", "", 1, 10, 1, only="gpio"),
     Setting("motion.confirm_window_seconds", "sensor", "Janela das detecções", "float",
-            "As detecções precisam acontecer dentro deste intervalo.", "s", 5, 120, 1),
+            "As detecções precisam acontecer dentro deste intervalo.", "s", 5, 120, 1, only="gpio"),
     Setting("motion.rearm_seconds", "sensor", "Calma para rearmar", "float",
-            "Tempo sem movimento antes de cumprimentar a próxima pessoa.", "s", 5, 600, 5),
+            "Tempo sem ninguém antes de cumprimentar a próxima pessoa.", "s", 5, 600, 5),
     Setting("motion.greeting_cooldown_seconds", "sensor", "Intervalo entre saudações", "float",
             "Tempo mínimo entre duas saudações.", "s", 10, 3600, 10),
+    Setting("camera.confidence", "sensor", "Certeza mínima", "int",
+            "Quão certa a detecção precisa estar de que é uma pessoa. Menor percebe mais, com mais enganos.",
+            "%", 20, 90, 5, advanced=True, only="camera"),
     Setting("motion.warmup_seconds", "sensor", "Aquecimento ao ligar", "float",
-            "O sensor se estabiliza antes do primeiro disparo.", "s", 1, 600, 5, advanced=True),
+            "O sensor se estabiliza antes do primeiro disparo.", "s", 1, 600, 5, advanced=True, only="gpio"),
     Setting("audio.microphone", "audio", "Microfone", "device", source="Audio/Source"),
     Setting("audio.speaker", "audio", "Alto-falante", "device", source="Audio/Sink"),
     Setting("audio.echo_cancel", "audio", "Cancelamento de eco", "choice",
@@ -154,7 +172,7 @@ def check(setting, value):
     if kind in ("int", "float"):
         return _number(setting, value, int if kind == "int" else float)
     if kind == "choice":
-        if value not in {choice[0] for choice in setting.choices}:
+        if not any(type(value) is type(choice[0]) and value == choice[0] for choice in setting.choices):
             raise ValueError(f"{setting.label}: opção inválida")
         return value
     if kind == "model":

@@ -1,6 +1,6 @@
 // Início: is Noha OK right now, and the controls used every day.
 import {h, icon, api, fmt, toast, text, replace, busy, switchControl, setSwitch, meter, setMeter, greeting} from "../lib.js";
-import {describe, orb, setOrb, gateLabel, drawTimeline, levelIcon, problems} from "../robot.js";
+import {describe, orb, setOrb, gateLabel, drawTimeline, levelIcon, problems, presenceNow, presenceDetail, usesCamera} from "../robot.js";
 
 function kpi(iconName, label) {
   const value = h("p", {class: "kpi-value"}, "—");
@@ -84,11 +84,27 @@ export function mount(root, ctx) {
   const gate = h("span", {class: "badge badge-neutral"}, "—");
   const timeline = h("div", {class: "timeline", role: "img"});
   const motionCount = h("span", {}, "");
+  // What the camera sees, on request only: the picture is made on the robot and never stored.
+  const view = h("figure", {class: "camera-view", hidden: true});
+  const viewButton = h("button", {class: "btn btn-ghost btn-small", type: "button", hidden: true}, icon("camera", 16), "Ver a câmera");
+  viewButton.addEventListener("click", () => busy(viewButton, async () => {
+    try {
+      const shot = await api("snapshot", {});
+      const near = shot.people.filter(person => person.counts).length, far = shot.people.length - near;
+      const close = h("button", {class: "btn-icon", type: "button", "aria-label": "Fechar a imagem", onclick: () => { view.hidden = true; replace(view); }}, icon("x", 18));
+      replace(view, h("img", {src: shot.image, alt: "Imagem atual da câmera da Noha", width: "416"}),
+        h("figcaption", {class: "help"}, h("span", {},
+          shot.people.length ? `${near} perto o bastante (contorno verde)${far ? `, ${far} longe demais (laranja)` : ""}. ` : "Nenhuma pessoa na imagem. ",
+          `Para contar, a pessoa ocupa ao menos ${shot.min_height}% da altura da imagem.`), close));
+      view.hidden = false;
+    } catch (failure) { toast(failure.message, "error"); }
+  }));
   const sensor = h("section", {class: "card sensor"},
     h("div", {class: "card-head"}, h("h3", {class: "card-title"}, icon("radar", 18), "Sensor de presença"), gate),
     h("div", {class: "sensor-now"}, dot, h("div", {}, motionState, motionDetail)),
     timeline, h("div", {class: "timeline-axis"}, h("span", {}, "10 min atrás"), motionCount, h("span", {}, "agora")),
-    h("a", {class: "link", href: "#ajustes/sensor"}, "Ajustar sensibilidade", icon("chevron", 16)));
+    view,
+    h("div", {class: "sensor-actions"}, h("a", {class: "link", href: "#ajustes/sensor"}, "Ajustar sensibilidade", icon("chevron", 16)), viewButton));
 
   // Diagnostics
   const summary = h("span", {class: "badge badge-neutral"}, "—");
@@ -136,8 +152,9 @@ export function mount(root, ctx) {
 
       const fresh = !voice.stale;
       dot.classList.toggle("on", fresh && !!voice.motion);
-      text(motionState, !fresh ? "Sem sinal do robô" : voice.gpio_ready === false ? "Sensor sem leitura" : voice.motion ? "Movimento agora" : "Sem movimento");
-      text(motionDetail, voice.last_motion ? `Último movimento ${fmt.ago((voice.updated || 0) - voice.last_motion)} · ${fmt.time(voice.last_motion)}` : "Nenhum movimento desde que o robô ligou");
+      text(motionState, presenceNow(voice));
+      text(motionDetail, presenceDetail(voice));
+      viewButton.hidden = !fresh || !usesCamera(voice) || voice.gpio_ready === false;
       text(gate, gateLabel(voice));
       const count = drawTimeline(timeline, voice);
       text(motionCount, count ? `${count} ${count === 1 ? "detecção" : "detecções"}` : "nenhuma detecção");

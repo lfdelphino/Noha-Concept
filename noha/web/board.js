@@ -1,6 +1,6 @@
 // Status board for the Pi's own display: read-only, large type, always live. Settings live on phones.
 import {h, icon, fmt, text, replace, meter, setMeter, api} from "./lib.js";
-import {describe, orb, setOrb, gateLabel, drawTimeline, levelIcon} from "./robot.js";
+import {describe, orb, setOrb, gateLabel, drawTimeline, levelIcon, presenceNow, lastSeen} from "./robot.js";
 
 const ESSENTIAL = ["voz", "internet", "chave", "audio", "sensor", "saudacoes", "custo"];
 const root = document.getElementById("root");
@@ -64,8 +64,8 @@ function render(status, available) {
   const voice = status.voice || {};
   drawTimeline(timeline, voice);
   text(gate, gateLabel(voice));
-  text(motion, voice.stale ? "Sem sinal do robô" : voice.motion ? "Movimento agora" :
-    voice.last_motion ? `Último movimento ${fmt.ago((voice.updated || 0) - voice.last_motion)}` : "Nenhum movimento desde que o robô ligou");
+  text(motion, voice.stale || voice.motion || !voice.last_motion ? presenceNow(voice)
+    : `${lastSeen(voice)} ${fmt.ago((voice.updated || 0) - voice.last_motion)}`);
   const byId = Object.fromEntries((status.checks || []).map(check => [check.id, check]));
   replace(checks, ESSENTIAL.filter(id => byId[id]).map(id => {
     const check = byId[id];

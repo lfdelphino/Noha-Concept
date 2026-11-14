@@ -1,12 +1,12 @@
 # Noha — anfitrião de voz para Raspberry Pi 5
 
-Noha recebe os visitantes da casa modelo da Noha Concept por voz: percebe quem chega com um sensor de presença, cumprimenta, responde dúvidas sobre a casa em português (ou no idioma do visitante) e se despede. Não usa câmera nem tela; tudo que o visitante precisa ouvir, inclusive como configurar o Wi-Fi, é dito pelo alto-falante.
+Noha recebe os visitantes da casa modelo da Noha Concept por voz: percebe quem chega com um sensor de movimento ou com a câmera do Pi, cumprimenta, responde dúvidas sobre a casa em português (ou no idioma do visitante) e se despede. Não precisa de tela; tudo que o visitante precisa ouvir, inclusive como configurar o Wi-Fi, é dito pelo alto-falante. A câmera só percebe que há uma pessoa por perto: a imagem é analisada no próprio Pi e nunca é gravada nem enviada.
 
 A equipe acompanha e ajusta o robô pelo **painel**, no celular ou no computador: estado ao vivo, visitas, custos, voz, personalidade, saudações, sensor e sistema. A conversa usa a API Realtime da OpenAI (`gpt-realtime-2.1-mini` por padrão, o modelo mais barato); o Pi cuida do áudio, do sensor, da rede e do painel. A personalidade e os fatos da Noha Concept vieram do rascunho original, `robo.py`, mantido como referência.
 
 ## Como uma visita acontece
 
-1. **Presença confirmada.** Quem só passa gera uma detecção curta e é ignorado. Noha cumprimenta depois de 6 s de movimento contínuo ou de 2 detecções em 20 s.
+1. **Presença confirmada.** Quem só passa é ignorado. Com o sensor de movimento, Noha cumprimenta depois de 6 s de movimento contínuo ou de 2 detecções em 20 s; com a câmera, quando uma pessoa grande o bastante na imagem (perto) fica à frente pelo tempo configurado.
 2. **Saudação gravada, sem custo.** Uma das frases de saudação toca do próprio robô. Elas são sintetizadas uma vez, na voz escolhida, e ficam salvas no Pi.
 3. **Escuta local.** Por até 10 s Noha ouve, ainda sem chamar a API. Se ninguém responde, a visita termina sem custo.
 4. **Conversa.** Quando a pessoa fala, a conversa Realtime começa com o início da fala preservado e sem repetir a saudação. Termina após 30 s de silêncio, por despedida ou pelo limite da visita.
@@ -22,7 +22,7 @@ Na mesma rede do Pi, abra **http://noha.local**. Pela internet, use o endereço 
 
 | Página | Para quê |
 |---|---|
-| **Início** | O que Noha está fazendo agora; saudações por movimento ligadas/desligadas; **Testar saudação**; volume do alto-falante; visitas, conversas, custo e tempo de hoje; sensor ao vivo com as detecções dos últimos 10 minutos; diagnóstico com o caminho para resolver cada problema. |
+| **Início** | O que Noha está fazendo agora; saudações por movimento ligadas/desligadas; **Testar saudação**; volume do alto-falante; visitas, conversas, custo e tempo de hoje; sensor ao vivo com as detecções dos últimos 10 minutos e, com a câmera, **Ver a câmera** (a imagem atual com as pessoas encontradas, feita só quando pedida); diagnóstico com o caminho para resolver cada problema. |
 | **Atividade** | Hoje, 7 ou 30 dias: visitas, quantas conversaram, custo e tempo; gráfico por hora ou dia; como as visitas terminaram; lista das visitas recentes; uso por modelo. |
 | **Ajustes** | Voz e personalidade, frases de saudação, conversa, sensor de presença, áudio e LEDs, custos e chave OpenAI. Cada grupo salva separadamente; Noha aplica quando estiver livre e reinicia a voz em alguns segundos. Alterações pendentes podem ser descartadas. |
 | **Sistema** | Diagnóstico completo, atualizações, acesso pela internet (ngrok), rede, saúde do Raspberry Pi, senha do painel e eventos ao vivo com filtros. |
@@ -64,7 +64,7 @@ Opções: `--hostname outro-nome` (padrão `noha`), `--echo-cancel auto|pipewire
 Depois de reiniciar, sem sudo:
 
 ```bash
-noha doctor          # configuração, chave, áudio, GPIO e LEDs
+noha doctor          # configuração, chave, áudio, sensor ou câmera e LEDs
 noha trigger         # simula a chegada de um visitante
 noha status          # estado publicado pelo serviço de voz
 sudo noha sensor off # desliga as saudações por movimento (on para religar)
@@ -81,7 +81,19 @@ systemctl --user start noha   # depois de Ctrl+C
 
 ## Hardware
 
-### Sensor de presença (HC-SR501)
+### Câmera (OV5647 ou Raspberry Pi Camera Module)
+
+A câmera reconhece pessoas, inclusive paradas, e ignora cortinas, animais e luz do sol. O modelo YOLOX-Nano (Megvii, Apache-2.0, `noha/data`) roda no próprio Pi cerca de 5 vezes por segundo em dois núcleos; nenhuma imagem é guardada ou sai do robô.
+
+1. Com o Pi desligado, ligue o cabo flat em **CAM/DISP 0 ou 1**, com os contatos do cabo virados para os contatos do conector nas duas pontas, e feche as travas. O Pi 5 usa o cabo de 22 para 15 vias.
+2. Ligue o Pi e confira: `rpicam-hello --list-cameras` deve listar a câmera, e `noha doctor` deve mostrar "Câmera e detecção de pessoas".
+3. Em **Ajustes → Sensor de presença**, escolha **Câmera**. O painel recusa a troca se a câmera ou as bibliotecas faltarem (`sudo apt install python3-picamera2 python3-onnxruntime`; o instalador já instala as duas).
+4. Na página Início, use **Ver a câmera**: as pessoas aparecem de pé? Se não, ajuste **Girar a imagem**. Contorno verde é quem conta para a saudação; laranja, quem está longe demais.
+5. **Tamanho mínimo da pessoa** decide a distância: quanto maior, mais perto o visitante precisa chegar. **Presença contínua para confirmar** de 1 a 2 s basta.
+
+"Câmera sem imagem" no diagnóstico quase sempre é o cabo mal encaixado: desligue, encaixe de novo e reinicie.
+
+### Sensor de movimento (HC-SR501)
 
 Desligue a alimentação para conectar. Confira os pinos pelas inscrições do módulo.
 
@@ -145,7 +157,7 @@ Durante o hotspot, regras `nftables` limitam a interface a DHCP, DNS e à págin
 | `/var/lib/noha-metrics/usage.sqlite3` | Métricas e visitas, 90 dias, só números |
 | `~/.cache/noha/greetings` | Saudações e instruções de Wi-Fi gravadas |
 | `/opt/noha/current` | Versão ativa; versões anteriores em `/opt/noha/releases` |
-| `noha.service` (usuário) | Voz, sensor, áudio e LEDs |
+| `noha.service` (usuário) | Voz, sensor ou câmera, áudio e LEDs |
 | `noha-network.service` | Wi-Fi, recuperação e hotspot |
 | `noha-portal.service` | Painel, quadro do robô e portal Wi-Fi na porta 80, sem root |
 | `noha-admin.service` | Operações administrativas por socket Unix restrito |
@@ -205,7 +217,7 @@ Abra http://localhost:8080 (senha `noha`; no cenário `primeiro-acesso`, `admin`
 ### Validação no Pi
 
 1. Reinicie sem entrar no desktop e confira o diagnóstico na página Início.
-2. Passe pela frente do sensor sem parar: não deve haver saudação. Pare na frente: a saudação toca.
+2. Passe pela frente do sensor sem parar: não deve haver saudação. Pare na frente: a saudação toca. Com a câmera, confira o enquadramento em **Ver a câmera**.
 3. Não responda: a visita aparece como "Só passou", sem custo. Responda: a conversa começa sem repetir a saudação.
 4. Interrompa uma resposta: a fala para sem Noha confundir a própria voz com o visitante.
 5. Desconecte e reconecte o USB: o diagnóstico mostra e depois limpa o problema.

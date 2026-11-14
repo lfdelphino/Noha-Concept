@@ -102,10 +102,12 @@ def main():
             sys.exit(f"I2C desativado para liberar GPIO{configured_gpio}. Reinicie o Pi e execute o instalador novamente.")
         sys.exit(f"GPIO{configured_gpio} está ocupado por I2C. Se não usa dispositivos I2C, repita com --disable-i2c e reinicie.")
 
-    print("Instalando dependências de voz, GPIO e rede…")
+    print("Instalando dependências de voz, sensor, câmera e rede…")
     run("apt-get", "update")
+    # picamera2 + ONNX Runtime: the camera recognizes people on the Pi itself ([motion] source = "camera").
     run("apt-get", "install", "-y", "python3-venv", "python3-gi", "python3-gst-1.0",
-        "python3-gpiozero", "python3-lgpio", "python3-usb", "gir1.2-gstreamer-1.0", "gstreamer1.0-tools",
+        "python3-gpiozero", "python3-lgpio", "python3-usb", "python3-numpy", "python3-pil", "python3-picamera2",
+        "python3-onnxruntime", "gir1.2-gstreamer-1.0", "gstreamer1.0-tools",
         "gstreamer1.0-plugins-base", "gstreamer1.0-plugins-good", "pipewire", "pipewire-pulse",
         "wireplumber", "libspa-0.2-modules", "dnsmasq-base", "network-manager", "nftables", "iw",
         "avahi-daemon", "avahi-utils", "libnss-mdns", "ca-certificates", "gnupg", "espeak-ng")
@@ -152,7 +154,7 @@ def main():
         run("groupadd", "--system", "noha")
     if subprocess.run(["getent", "passwd", "noha-ngrok"], stdout=subprocess.DEVNULL).returncode:
         run("useradd", "--system", "--user-group", "--no-create-home", "--shell", "/usr/sbin/nologin", "noha-ngrok")
-    run("usermod", "-a", "-G", "audio,gpio,plugdev,noha", args.user)
+    run("usermod", "-a", "-G", "audio,gpio,plugdev,video,noha", args.user)
     manifest_path = STATE / "install.json"
     linger_before = old_manifest.get("linger_before", Path(f"/var/lib/systemd/linger/{args.user}").exists())
     run("loginctl", "enable-linger", args.user)
@@ -300,7 +302,7 @@ def main():
     if not args.no_kiosk:
         from kiosk import setup as kiosk_setup
         kiosk_setup(args.user)
-    # New audio/gpio/noha group membership takes effect reliably after reboot.
+    # New audio/gpio/video/noha group membership takes effect reliably after reboot.
     print("\nInstalado. Reinicie o Pi para aplicar grupos e iniciar Noha sem login.")
     print("API key: /etc/noha/secrets.env (não publique esse arquivo)")
     print("Depois de reiniciar: noha doctor; noha trigger; journalctl --user -u noha -f")

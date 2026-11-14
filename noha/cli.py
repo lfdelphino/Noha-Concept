@@ -61,6 +61,21 @@ def doctor(config):
                "Plugins GStreamer")
     except Exception:
         report(False, "GStreamer / PyGObject indisponível")
+    if config.motion.source == "camera":
+        doctor_camera(config, report)
+    else:
+        doctor_gpio(config, report)
+    if config.leds.enabled:
+        from .leds import find, firmware_version
+        try:
+            report(True, f"LEDs reSpeaker XVF3800: firmware {firmware_version(find())}")
+        except Exception as exc:
+            report(False, f"LEDs reSpeaker XVF3800 ({type(exc).__name__}); confira USB e o grupo plugdev")
+    print("Verifique também: systemctl status noha-network; systemctl --user status noha")
+    return 1 if failures else 0
+
+
+def doctor_gpio(config, report):
     try:
         result = subprocess.run(["pinctrl", "get", str(config.motion.gpio)], capture_output=True, text=True, timeout=5)
         value = result.stdout.strip()
@@ -75,14 +90,39 @@ def doctor(config):
         report(True, f"Controlador GPIO RP1: gpiochip{rp1_chip()}")
     except Exception as exc:
         report(False, f"Controlador GPIO RP1 ({type(exc).__name__}: {exc})")
-    if config.leds.enabled:
-        from .leds import find, firmware_version
+
+
+def doctor_camera(config, report):
+    from .motion import camera_problems
+    try:
+        problems = camera_problems()
+    except Exception as exc:
+        problems = [f"Câmera inacessível ({type(exc).__name__})"]
+    for problem in problems:
+        report(False, problem)
+    if problems:
+        return
+    from .app import runtime_dir
+    try:
+        status = json.loads((runtime_dir() / "status.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        status = {}
+    import time
+    if status.get("source") == "camera" and status.get("gpio_ready") and time.time() - status.get("updated", 0) < 15:
+        # The voice service holds the camera: its heartbeat says whether frames arrive.
+        info = status.get("camera") or {}
+        report(True, f"Câmera em uso pela Noha: {info.get('seen', 0)} pessoa(s) na imagem agora")
+        return
+    try:
+        from .camera import CameraSensor
+        sensor = CameraSensor(config.camera, runtime_dir(), start=False)
         try:
-            report(True, f"LEDs reSpeaker XVF3800: firmware {firmware_version(find())}")
-        except Exception as exc:
-            report(False, f"LEDs reSpeaker XVF3800 ({type(exc).__name__}); confira USB e o grupo plugdev")
-    print("Verifique também: systemctl status noha-network; systemctl --user status noha")
-    return 1 if failures else 0
+            sensor.step()
+        finally:
+            sensor.close()
+        report(True, f"Câmera e detecção de pessoas: {sensor.info['seen']} pessoa(s) na imagem agora")
+    except Exception as exc:
+        report(False, f"Câmera sem imagem ({type(exc).__name__}); confira o cabo flat nas duas pontas")
 
 
 def main():
@@ -113,7 +153,11 @@ def main():
         return
     if args.command == "sensor" and args.state == "watch":
         from .sensorwatch import watch
-        watch(args.gpio if args.gpio is not None else Config.load(args.config).motion.gpio)
+        motion = Config.load(args.config).motion
+        if args.gpio is None and motion.source == "camera":
+            raise SystemExit("Noha usa a câmera: veja o que ela enxerga em Início → Ver a câmera, no painel. "
+                             "Para testar um sensor de movimento ligado ao Pi: noha sensor watch --gpio 17")
+        watch(args.gpio if args.gpio is not None else motion.gpio)
         return
     if args.command == "sensor":
         from .config import PRESENCE, presence_enabled

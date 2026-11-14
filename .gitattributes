@@ -5,3 +5,4 @@
 *.timer text eol=lf
 *.yml text eol=lf
 *.toml text eol=lf
+*.onnx binary

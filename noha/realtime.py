@@ -61,7 +61,7 @@ def record_usage(model, usage):
         record(model, **values, cost_usd=response_cost(model, usage))
 
 
-GREETING = "Um visitante acabou de ser detectado pelo sensor de movimento. Siga agora a seção INÍCIO DA VISITA."
+GREETING = "Um visitante acabou de ser detectado pelo sensor de presença. Siga agora a seção INÍCIO DA VISITA."
 
 
 def greeted(text):

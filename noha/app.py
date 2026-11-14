@@ -1,8 +1,9 @@
-"""Voice service: motion or the dashboard start a visit; the heartbeat file tells the dashboard what is happening."""
+"""Voice service: the presence sensor or the dashboard start a visit; the heartbeat file tells the dashboard what is happening."""
 import asyncio
 from importlib.metadata import version
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import random
@@ -11,13 +12,13 @@ import subprocess
 import time
 
 from .audio import AudioIO, AudioUnavailable, echo_cancel_dropped, missing, profile_missing, xvf3800_full_volume
-from .config import presence_enabled
+from .config import CAMERA_WARMUP, presence_enabled
 from .controller import internet_available
 from .greeting import OFFLINE_GREETING, Preroll, SpeechDetector, espeak, greet_and_listen, play, prepare, setup_text
 from .leds import Ring, pattern_for
 from .metrics import record, record_visit, spent_today
 from .models import model_info
-from .motion import open_sensor
+from .motion import open_camera, open_sensor
 from .network import hotspot_ssid
 from .realtime import APIProblem, api_message, close_problem, conversation, over_budget, safe_code
 from .state import MotionGate, MotionLog
@@ -64,20 +65,27 @@ class Robot:
     """The main loop and one visit at a time. Hardware and network access are injectable for tests."""
 
     def __init__(self, config, simulate=False, *, adapter=None, audio_factory=AudioIO, sensor_factory=open_sensor,
-                 online=None, synthesize=prepare, speak_offline=espeak, clock=time.monotonic):
+                 camera_factory=open_camera, online=None, synthesize=prepare, speak_offline=espeak, clock=time.monotonic):
         self.config = config
         if adapter is None:
             if model_info(config.voice.model).transport == "live":
                 from .live import conversation as adapter
             else:
                 adapter = conversation
-        self.adapter, self.audio_factory, self.sensor_factory = adapter, audio_factory, sensor_factory
+        self.adapter, self.audio_factory = adapter, audio_factory
+        self.sensor_factory, self.camera_factory = sensor_factory, camera_factory
         self.online = online or self.internet
         self.synthesize, self.speak_offline, self.clock = synthesize, speak_offline, clock
         self.simulate = simulate
         motion = config.motion
-        self.gate = MotionGate(clock(), motion.warmup_seconds, motion.rearm_seconds, motion.greeting_cooldown_seconds,
-                               motion.confirm_seconds, motion.confirm_pulses, motion.confirm_window_seconds)
+        self.camera = motion.source == "camera"
+        if self.camera:
+            # A person in view is presence itself: no settling time, and separate detections prove nothing.
+            self.gate = MotionGate(clock(), min(motion.warmup_seconds, CAMERA_WARMUP), motion.rearm_seconds,
+                                   motion.greeting_cooldown_seconds, motion.confirm_seconds, math.inf)
+        else:
+            self.gate = MotionGate(clock(), motion.warmup_seconds, motion.rearm_seconds, motion.greeting_cooldown_seconds,
+                                   motion.confirm_seconds, motion.confirm_pulses, motion.confirm_window_seconds)
         self.motion = MotionLog()
         self.ring = Ring(config.leds)
         self.sensor = self.active = self.audio = self.preparing = None
@@ -112,7 +120,8 @@ class Robot:
         trigger.unlink(missing_ok=True)
         if self.simulate:
             trigger.touch()
-        heartbeat(model=self.config.voice.model, gpio=self.config.motion.gpio, audio_ready=False, busy=False)
+        heartbeat(model=self.config.voice.model, source=self.config.motion.source, gpio=self.config.motion.gpio,
+                  audio_ready=False, busy=False)
         update_status("aquecendo_sensor")
         try:
             while True:
@@ -157,16 +166,35 @@ class Robot:
             self.publish(now, detected, updating)
 
     def poll_sensor(self, now):
+        if self.sensor is not None and getattr(self.sensor, "failed", False):  # the camera stopped sending frames
+            self.sensor.close()
+            self.sensor = None
+            self.sensor_lost(now, "sem imagens")
         if self.sensor is not None or now < self.next_sensor_retry:
             return
         try:
-            self.sensor = self.sensor_factory(self.config.motion.gpio)
+            if self.camera:
+                self.sensor = self.camera_factory(self.config.camera, runtime_dir())
+            else:
+                self.sensor = self.sensor_factory(self.config.motion.gpio)
+        except Exception as exc:
+            self.sensor_lost(now, type(exc).__name__)
+            return
+        if self.active is None:  # a visit started from the dashboard keeps its own state
             warming = now - self.gate.boot < self.gate.warmup
             update_status("aquecendo_sensor" if warming else "aguardando_movimento")
-        except Exception as exc:
-            log.error("GPIO indisponível type=%s; confira BCM%s com noha doctor", type(exc).__name__, self.config.motion.gpio)
-            self.next_sensor_retry = now + 30
-            update_status("gpio_indisponivel", f"Confira a ligação do sensor no GPIO {self.config.motion.gpio}")
+
+    def sensor_lost(self, now, reason):
+        self.next_sensor_retry = now + 30
+        self.next_heartbeat = 0
+        if self.camera:
+            log.error("Câmera indisponível: %s; confira com noha doctor", reason)
+            state, detail = "camera_indisponivel", "Confira o cabo da câmera nas duas pontas"
+        else:
+            log.error("GPIO indisponível type=%s; confira BCM%s com noha doctor", reason, self.config.motion.gpio)
+            state, detail = "gpio_indisponivel", f"Confira a ligação do sensor no GPIO {self.config.motion.gpio}"
+        if self.active is None:
+            update_status(state, detail)
 
     def reap(self):
         if self.active and self.active.done():
@@ -262,6 +290,7 @@ class Robot:
         heartbeat(busy=self.active is not None, speaking=bool(self.audio and self.audio.busy()), ready=ready,
                   updating=updating, audio_ready=self.audio_ready,
                   audio_missing=self.audio_missing, gpio_ready=self.sensor is not None, motion=detected,
+                  camera=getattr(self.sensor, "info", None),  # people in view and how much of the picture they fill
                   last_motion=self.motion.last, motion_history=self.motion.snapshot(), gate=gate,
                   gate_seconds=round(seconds), sensor_enabled=self.enabled, greeting_local=self.config.greeting.local,
                   local_greetings=len(self.clips), setup_ready=self.setup_clip is not None,

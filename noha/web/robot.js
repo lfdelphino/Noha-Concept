@@ -12,6 +12,7 @@ const STATES = {
   orientando_wifi: ["Explicando como configurar o Wi-Fi", "speaking", "warn"],
   recuperando_audio_ou_conexao: ["Recuperando a conexão", "connecting", "warn"],
   gpio_indisponivel: ["Sensor de presença sem leitura", "error", "error"],
+  camera_indisponivel: ["Câmera sem imagem", "error", "error"],
   audio_indisponivel: ["Microfone ou alto-falante ausente", "error", "error"],
   erro_api: ["A OpenAI recusou a conversa", "error", "error"],
   sem_conexao: ["Sem conexão com a OpenAI", "error", "error"],
@@ -43,9 +44,27 @@ export function describe(status) {
   if (voice.state === "conversando" && voice.speaking) mode = "speaking";
   let detail = voice.detail || DETAILS[voice.state] || "";
   if (voice.state === "aguardando_movimento" && voice.last_motion) {
-    detail = `Último movimento ${fmt.ago((voice.updated || Date.now() / 1000) - voice.last_motion)}.`;
+    detail = `${lastSeen(voice)} ${fmt.ago((voice.updated || Date.now() / 1000) - voice.last_motion)}.`;
   }
   return {title, detail, mode, tone};
+}
+
+// The camera sees people; the motion sensor only movement.
+export const usesCamera = voice => voice?.source === "camera";
+export const lastSeen = voice => usesCamera(voice) ? "Última pessoa por perto" : "Último movimento";
+
+export function presenceNow(voice) {
+  if (!voice || voice.stale) return "Sem sinal do robô";
+  if (voice.gpio_ready === false) return usesCamera(voice) ? "Câmera sem imagem" : "Sensor sem leitura";
+  if (usesCamera(voice)) return voice.motion ? "Pessoa por perto" : "Ninguém por perto";
+  return voice.motion ? "Movimento agora" : "Sem movimento";
+}
+
+export function presenceDetail(voice) {
+  const seen = voice?.last_motion ? `${lastSeen(voice)} ${fmt.ago((voice.updated || 0) - voice.last_motion)} · ${fmt.time(voice.last_motion)}`
+    : usesCamera(voice) ? "Ninguém por perto desde que o robô ligou" : "Nenhum movimento desde que o robô ligou";
+  const far = usesCamera(voice) && voice.camera ? voice.camera.seen - voice.camera.people : 0;
+  return far > 0 ? `${seen} · ${far} ${far === 1 ? "pessoa longe" : "pessoas longe"}, sem saudação` : seen;
 }
 
 export function orb() {

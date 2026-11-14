@@ -4,7 +4,7 @@ import {h, icon, api, fmt, toast, text, replace, busy, switchControl, setSwitch,
 const GROUP_ICONS = {personalidade: "sparkle", saudacoes: "wave", conversa: "chat", sensor: "radar", audio: "volume", custos: "coin", chave: "key"};
 const GROUP_NOTES = {
   audio: "Trocar o microfone ou o alto-falante reinicia o áudio do robô.",
-  sensor: "Mudar o pino exige a ligação física correspondente. Acompanhe o efeito no sensor da página Início.",
+  sensor: "Acompanhe o efeito no sensor da página Início. Com a câmera, use Ver a câmera para conferir o enquadramento.",
   chave: "Usada nas conversas e para gravar as saudações. Crie e gerencie chaves em platform.openai.com.",
   saudacoes: "Mudar frases, voz ou estilo grava novas saudações automaticamente quando houver internet.",
 };
@@ -61,8 +61,10 @@ function control(setting, value, ctx, onChange) {
     };
     fill(value);
     select.addEventListener("change", onChange);
-    return {input: select, id, refill: () => fill(select.value),
-      get: () => kind === "gpio" ? Number(select.value) : select.value, set: v => fill(v)};
+    // Choices keep their type: the camera rotation is a number, the sensor source a string.
+    const chosen = () => kind === "gpio" ? Number(select.value)
+      : kind === "choice" ? (setting.choices.find(([v]) => String(v) === select.value) ?? [select.value])[0] : select.value;
+    return {input: select, id, refill: () => fill(select.value), get: chosen, set: v => fill(v)};
   }
   if (kind === "text" || kind === "string") {
     const area = h("textarea", {id, class: `input ${kind === "text" ? "textarea-long" : ""}`, rows: kind === "text" ? "16" : "3", spellcheck: "true"});
@@ -178,12 +180,18 @@ export function mount(root, ctx) {
     const status = h("p", {class: "form-status", role: "status"});
     const save = h("button", {class: "btn btn-primary", type: "submit", disabled: true}, "Salvar alterações");
     const undo = h("button", {class: "btn btn-ghost", type: "button", disabled: true}, "Desfazer");
+    const conditional = [];  // [block, source]: fields of one kind of presence sensor
+    const showSource = () => {
+      const source = fieldCtx.draft("motion.source");
+      for (const [block, only] of conditional) block.hidden = only !== source;
+    };
     const changed = () => {
       const dirty = dirtyFields().length > 0;
       save.disabled = !dirty;
       undo.disabled = !dirty;
       text(status, dirty ? "Alterações não salvas" : "");
       fields.get("voice.voice")?.refill?.();
+      showSource();
     };
     const fieldCtx = {models: data.models, devices: data.devices, gpio: data.gpio_pins, keyConfigured: data.openai_key_configured,
       draft: key => fields.get(key)?.get() ?? baseline[key]};
@@ -200,8 +208,10 @@ export function mount(root, ctx) {
       const block = field.inline
         ? h("div", {class: "field field-inline"}, h("div", {}, label, help ? h("p", {class: "help"}, help) : null), field.input)
         : h("div", {class: "field"}, label, field.input, help ? h("p", {class: "help"}, help) : null, error);
+      if (setting.only) conditional.push([block, setting.only]);
       (setting.advanced ? advanced : body).push(block);
     }
+    showSource();
     const form = h("form", {class: "card settings-card", novalidate: true},
       h("div", {class: "card-head"}, h("div", {}, h("h2", {class: "card-title"}, icon(GROUP_ICONS[group] || "settings", 20), info.label),
         h("p", {class: "help"}, info.help))),
@@ -209,8 +219,7 @@ export function mount(root, ctx) {
       body,
       advanced.length ? h("details", {class: "advanced"}, h("summary", {}, icon("down", 16), "Ajustes avançados"), advanced) : null,
       h("div", {class: "form-actions"}, status, undo, save));
-    undo.addEventListener("click", () => { for (const [key, field] of fields) field.set(baseline[key]); changed(); });
-    form.addEventListener("submit", async event => {
+    undo.addEventListener("click", () => { for (const [key, field] of fields) field.set(baseline[key]); changed(); });    form.addEventListener("submit", async event => {
       event.preventDefault();
       const changes = {};
       let invalid = null;

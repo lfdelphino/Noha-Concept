@@ -181,6 +181,19 @@ async def validate_gpio(pin, current):
             raise ValueError(f"Não foi possível abrir o GPIO BCM{pin}; confira se outro programa usa o pino") from None
 
 
+async def validate_camera():
+    """Before switching to the camera: its libraries and the camera itself, checked as the voice user."""
+    output = await command("runuser", "-u", account().pw_name, "--", "/opt/noha/current/venv/bin/python", "-c",
+                           "import json; from noha.motion import camera_problems; print(json.dumps(camera_problems()))",
+                           timeout=30, check=False)
+    try:
+        problems = json.loads(output.splitlines()[-1])
+    except (ValueError, IndexError):
+        problems = ["Não foi possível consultar a câmera; confira com noha doctor"]
+    if problems:
+        raise ValueError(problems[0])
+
+
 def redact(message):
     for value in (secret_key(), read_json(ETC / "ngrok.json").get("authtoken", "")):
         if value:
@@ -211,7 +224,8 @@ class Admin:
             ("POST", "password"): self.password, ("GET", "status"): self.status,
             ("GET", "settings"): self.get_settings, ("POST", "settings"): self.save_settings,
             ("POST", "discard"): self.discard_pending, ("POST", "presence"): self.presence,
-            ("POST", "trigger"): self.trigger, ("POST", "stop"): self.stop, ("GET", "volume"): self.volume, ("POST", "volume"): self.set_volume,
+            ("POST", "trigger"): self.trigger, ("POST", "stop"): self.stop, ("POST", "snapshot"): self.snapshot,
+            ("GET", "volume"): self.volume, ("POST", "volume"): self.set_volume,
             ("GET", "usage"): self.usage, ("GET", "logs"): self.logs, ("POST", "ngrok"): self.save_ngrok,
             ("POST", "check-update"): functools.partial(self.update, install=False),
             ("POST", "install-update"): functools.partial(self.update, install=True),
@@ -369,6 +383,29 @@ class Admin:
         (voice_runtime() / "stop").touch(mode=0o644)
         return {"accepted": True, "message": "Conversa encerrada. Noha volta a aguardar visitantes."}
 
+    async def snapshot(self, data):
+        """One picture from the camera with the people it found, made on request and deleted once read."""
+        status = voice_status()
+        if status["stale"]:
+            raise ValueError("O serviço de voz não está respondendo")
+        if status.get("source") != "camera":
+            raise ValueError("Noha usa o sensor de movimento; escolha a câmera nos ajustes")
+        if status.get("gpio_ready") is False:
+            raise ValueError("A câmera não envia imagens. Confira o cabo e o diagnóstico.")
+        runtime = voice_runtime()
+        result = runtime / "snapshot.json"
+        result.unlink(missing_ok=True)
+        (runtime / "snapshot").touch(mode=0o644)
+        try:
+            for _ in range(40):  # the camera thread answers with its next frame, a fraction of a second
+                await asyncio.sleep(0.1)
+                if result.exists():
+                    return read_json(result)
+            raise ValueError("A câmera não respondeu. Tente de novo em alguns segundos.")
+        finally:
+            (runtime / "snapshot").unlink(missing_ok=True)
+            result.unlink(missing_ok=True)
+
     async def speaker_node(self):
         name = Config.load(ETC / "noha.toml").audio.speaker
         node = next((n for n in await audio_nodes() if n["name"] == name and n["class"] == "Audio/Sink"), None)
@@ -418,6 +455,8 @@ class Admin:
                     raise ValueError("Dispositivo de áudio indisponível; conecte-o e atualize a página")
         if "motion.gpio" in changes:
             await validate_gpio(changes["motion.gpio"], config.motion.gpio)
+        if changes.get("motion.source") == "camera" and config.motion.source != "camera":
+            await validate_camera()
         with update_lock():
             pending = read_json(STATE / "config-pending.json")
             pending.update(changes)

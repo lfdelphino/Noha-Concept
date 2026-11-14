@@ -23,7 +23,8 @@ TYPES = {".html": "text/html", ".css": "text/css", ".js": "text/javascript", ".p
 BOARD = {("GET", "session"), ("GET", "events"), ("GET", "status")}
 OPERATIONS = {("GET", "status"), ("GET", "settings"), ("POST", "settings"), ("POST", "discard"), ("GET", "usage"),
               ("GET", "logs"), ("GET", "volume"), ("POST", "volume"), ("POST", "presence"), ("POST", "trigger"), ("POST", "stop"),
-              ("POST", "ngrok"), ("POST", "password"), ("POST", "check-update"), ("POST", "install-update")}
+              ("POST", "ngrok"), ("POST", "password"), ("POST", "check-update"), ("POST", "install-update"),
+              ("POST", "snapshot")}
 PASSWORD_CHANGE = {("GET", "session"), ("POST", "logout"), ("POST", "password")}
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")

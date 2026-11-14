@@ -33,8 +33,9 @@ class Voice:
 
 @dataclass
 class Motion:
+    source: str = "gpio"  # gpio: motion sensor on a pin | camera: people detected by the Pi camera
     gpio: int = 17  # physical pin 11: no board pull-up and no default alternate function
-    warmup_seconds: float = 60
+    warmup_seconds: float = 60  # the motion sensor settling; the camera is ready in CAMERA_WARMUP
     rearm_seconds: float = 30
     greeting_cooldown_seconds: float = 120
     # A passer-by makes one short detection. Greet after this much continuous motion
@@ -42,6 +43,17 @@ class Motion:
     confirm_seconds: float = 6
     confirm_pulses: int = 2
     confirm_window_seconds: float = 20
+
+
+CAMERA_WARMUP = 5  # seconds for the exposure to settle
+
+
+@dataclass
+class Camera:
+    """Person detection on the Pi itself (camera.py); pictures are never stored or sent."""
+    rotation: int = 0  # degrees clockwise that turn the picture upright: 0, 90, 180 or 270
+    min_height: int = 30  # percent of the picture's height a person must fill: nearer people look taller
+    confidence: int = 50  # percent; lower finds more people and more false ones
 
 
 GREETINGS = [
@@ -132,6 +144,7 @@ class Network:
 class Config:
     voice: Voice = field(default_factory=Voice)
     motion: Motion = field(default_factory=Motion)
+    camera: Camera = field(default_factory=Camera)
     audio: Audio = field(default_factory=Audio)
     network: Network = field(default_factory=Network)
     leds: Leds = field(default_factory=Leds)
@@ -142,8 +155,8 @@ class Config:
     def load(cls, path="/etc/noha/noha.toml"):
         data = Path(path).read_bytes()
         raw = tomllib.loads(data.decode("utf-8"))
-        sections = {"voice": Voice, "motion": Motion, "audio": Audio, "network": Network, "leds": Leds,
-                    "greeting": Greeting}
+        sections = {"voice": Voice, "motion": Motion, "camera": Camera, "audio": Audio, "network": Network,
+                    "leds": Leds, "greeting": Greeting}
         if set(raw) - set(sections):
             raise ValueError("Seção desconhecida na configuração")
         parts = {}

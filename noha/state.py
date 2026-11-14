@@ -11,6 +11,7 @@ class MotionGate:
     cooldown: float = 120
     # Someone walking past makes one short detection; a visitor keeps moving in front of Noha.
     # Greet after `confirm` seconds of continuous motion or `pulses` detections within `window`.
+    # The camera sees a person for as long as they stay: its pulses are infinite and only `confirm` counts.
     confirm: float = 6
     pulses: int = 2
     window: float = 20
